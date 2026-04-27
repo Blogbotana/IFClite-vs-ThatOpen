@@ -1,0 +1,35 @@
+{
+  "name": "ifclite-vs-thatopen",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ifc-lite/export": "latest",
+    "@ifc-lite/geometry": "latest",
+    "@ifc-lite/parser": "latest",
+    "@ifc-lite/renderer": "latest",
+    "@thatopen/components": "latest",
+    "@thatopen/components-front": "latest",
+    "@thatopen/fragments": "latest",
+    "apache-arrow": "latest",
+    "parquet-wasm": "latest",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "three": "^0.182.0",
+    "web-ifc": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.182.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "^5.8.3",
+    "vite": "^8.0.10",
+    "vite-plugin-wasm": "^3.4.1"
+  }
+}
