@@ -34,6 +34,13 @@ export interface TreeNode {
   children: TreeNode[];
 }
 
+export interface RuntimeStats {
+  fps: number;
+  frameTimeMs: number;
+  heapUsedBytes?: number;
+  heapLimitBytes?: number;
+}
+
 export interface ViewerState {
   ready: boolean;
   busy: boolean;
@@ -45,6 +52,10 @@ export interface ViewerState {
   tree: TreeNode[];
   entityIndex: Record<number, EntitySummary>;
   selected?: EntitySummary;
+  /** Wall-clock timestamp (performance.now) when the current load started. */
+  openStartedAt?: number;
+  /** Final model open duration in ms, set once the load finishes. */
+  openMs?: number;
 }
 
 export interface ViewerLoadContext {
@@ -65,4 +76,6 @@ export interface ViewerAdapter {
   reset: () => Promise<void> | void;
   load: (context: ViewerLoadContext) => Promise<void>;
   select?: (expressId?: number) => Promise<void> | void;
+  /** Live rendering statistics (frame rate / frame time) for this viewer. */
+  getStats?: () => RuntimeStats;
 }

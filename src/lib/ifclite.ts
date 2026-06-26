@@ -1,10 +1,11 @@
 import { IfcParser, extractRelationshipsOnDemand } from '@ifc-lite/parser';
 import { type IfcDataStore } from '@ifc-lite/parser';
-import { buildSpatialTree, buildEntityIndex, buildEntitySummary } from './ifc-tree';
+import { buildEntitySummary } from './ifc-tree';
 import { GeometryProcessor, type MeshData } from '@ifc-lite/geometry';
-import { CSVExporter, ParquetExporter } from '@ifc-lite/export';
+import { ParquetExporter } from '@ifc-lite/export';
 import { Renderer, type RenderOptions } from '@ifc-lite/renderer';
-import type { EntitySummary, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
+import type { EntitySummary, RuntimeStats, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
+import { FrameRateTracker, readHeapStats } from './runtime-stats';
 import { persistArtifacts, textBytes } from './file-system';
 
 function formatBytes(size: number): string {
@@ -188,7 +189,11 @@ function resolveTreeSelectionExpressId(
 
 export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
   const renderer = new Renderer(canvas);
-  const geometry = new GeometryProcessor();
+  // Keep all geometry on the flat MeshData stream consumed by renderer.addMeshes.
+  // With instancing enabled (the @ifc-lite/geometry v2 default), repeated
+  // elements are emitted as packed `instancedShards` instead of flat meshes;
+  // this app does not decode/upload those shards, so they would be invisible.
+  const geometry = new GeometryProcessor({ enableInstancing: false });
   let animationFrame = 0;
   let latestStore: IfcDataStore | null = null;
   let latestEntityIndex: Record<number, EntitySummary> = {};
@@ -196,6 +201,7 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
   let onSelectedCallback: ViewerLoadContext['onSelected'] | null = null;
   let selectedExpressId: number | null = null;
   let lastInteractionAt = 0;
+  const frameRate = new FrameRateTracker();
 
   const INTERACTION_DECAY_MS = 140;
   const MAX_PIXEL_RATIO = 2;
@@ -276,9 +282,21 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
       return;
     }
 
+    // Orbit-around-selection: aim future orbits at the precise surface point
+    // under the cursor so the camera rotates about the clicked object.
+    try {
+      const hit = renderer.raycastScene(x, y);
+      if (hit?.intersection?.point) {
+        renderer.getCamera().setOrbitCenter(hit.intersection.point);
+      }
+    } catch {
+      // Raycast is best-effort; ignore failures and keep the default pivot.
+    }
+
     void renderer.pick(x, y).then((result) => {
       if (!result || result.expressId <= 0) {
         selectedExpressId = null;
+        renderer.getCamera().setOrbitCenter(null);
         renderer.requestRender();
         onSelectedCallback?.(undefined);
         return;
@@ -335,6 +353,7 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
       visualEnhancement: BASE_VISUAL_ENHANCEMENT,
       selectedId: selectedExpressId,
     });
+    frameRate.tick(now);
     animationFrame = window.requestAnimationFrame(renderLoop);
   };
 
@@ -373,12 +392,20 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
       canvas.removeEventListener('contextmenu', onContextMenu);
     },
     reset() {
+      renderer.getCamera().setOrbitCenter(null);
       if (latestMeshes.length > 0) {
         renderer.fitToView();
       } else {
         renderer.getCamera().reset();
       }
       renderer.requestRender();
+    },
+    getStats(): RuntimeStats {
+      return {
+        fps: frameRate.fps,
+        frameTimeMs: frameRate.frameTimeMs,
+        ...readHeapStats(),
+      };
     },
     async load(context: ViewerLoadContext) {
       clearCurrentModel();
@@ -428,23 +455,8 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
         requestAnimationFrame(() => resolve(performance.now()));
       });
 
-      const tree = buildSpatialTree(latestStore);
-      const entityIndex = buildEntityIndex(latestStore, tree);
-      latestEntityIndex = entityIndex;
-      context.onTree(tree);
-      context.onEntityIndex(entityIndex);
-
-      const firstNode = tree[0];
-      if (firstNode) {
-        selectedExpressId = firstNode.expressId;
-        context.onSelected(entityIndex[firstNode.expressId]);
-      }
-
       const artifactsPersistStart = performance.now();
       const artifactFiles: Array<{ name: string; bytes: Uint8Array }> = [];
-      const exporter = new CSVExporter(latestStore);
-      artifactFiles.push({ name: 'entities.csv', bytes: textBytes(exporter.exportEntities()) });
-      artifactFiles.push({ name: 'spatial-hierarchy.csv', bytes: textBytes(exporter.exportSpatialHierarchy()) });
       try {
         const parquet = new ParquetExporter(latestStore, { meshes: latestMeshes } as any);
         artifactFiles.push({ name: 'model.bos', bytes: await parquet.exportBOS({ includeGeometry: true }) });
@@ -453,7 +465,7 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
       }
       artifactFiles.push({
         name: 'metrics.json',
-        bytes: textBytes(JSON.stringify({ metrics: [], tree, meshCount }, null, 2)),
+        bytes: textBytes(JSON.stringify({ meshCount }, null, 2)),
       });
       const artifacts = await persistArtifacts('ifclite', context.file.name, artifactFiles);
       const artifactsPersistEnd = performance.now();
@@ -464,7 +476,6 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
         { label: 'Schema', value: latestStore.schemaVersion },
         { label: 'Entities', value: latestStore.entityCount.toLocaleString() },
         { label: 'Meshes', value: meshCount.toLocaleString() },
-        { label: 'Spatial roots', value: tree.length.toLocaleString() },
         { label: 'IFC parsing time', value: `${(completedAt - start).toFixed(0)} ms` },
         { label: 'First geometry frame', value: `${((firstBatchAt ?? completedAt) - start).toFixed(0)} ms` },
         { label: 'Render ready time', value: `${(renderReadyAt - start).toFixed(0)} ms` },
@@ -481,6 +492,9 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
     },
     select(expressId?: number) {
       selectedExpressId = expressId ?? null;
+      if (expressId === undefined) {
+        renderer.getCamera().setOrbitCenter(null);
+      }
       renderer.requestRender();
     },
   };

@@ -2,10 +2,9 @@ import * as OBC from '@thatopen/components';
 import * as OBF from '@thatopen/components-front';
 import * as WEBIFC from 'web-ifc';
 import { Box3, Vector3 } from 'three';
-import { IfcParser } from '@ifc-lite/parser';
-import { buildSpatialTree, buildEntityIndex, buildEntitySummary } from './ifc-tree';
-import type { EntitySummary, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
+import type { RuntimeStats, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
 import { persistArtifacts, textBytes } from './file-system';
+import { FrameRateTracker, readHeapStats } from './runtime-stats';
 
 const THATOPEN_LOAD_TIMEOUT_MS = 120_000;
 let webIfcInitPatched = false;
@@ -83,9 +82,27 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
   let currentModel: any = null;
   let currentModelId: string | null = null;
   let activeLoadModelId: string | null = null;
-  let latestStore: Awaited<ReturnType<IfcParser['parseColumnar']>> | null = null;
-  let latestEntityIndex: Record<number, EntitySummary> = {};
   let onSelectedCallback: ViewerLoadContext['onSelected'] | null = null;
+  const frameRate = new FrameRateTracker();
+
+  // Re-aim the camera's orbit pivot at the bounding-box centre of the selected
+  // element so dragging rotates the view around that object.
+  const orbitAroundLocalId = async (localId: number) => {
+    if (!currentModel || typeof currentModel.getBoxes !== 'function') {
+      return;
+    }
+    try {
+      const boxes: Box3[] = await currentModel.getBoxes([localId]);
+      const box = boxes?.[0];
+      if (!box) {
+        return;
+      }
+      const center = box.getCenter(new Vector3());
+      world.camera.controls?.setOrbitPoint(center.x, center.y, center.z);
+    } catch (error) {
+      console.warn('[ThatOpen] Failed to set orbit point:', error);
+    }
+  };
 
   const clearCurrentModel = async () => {
     if (activeLoadModelId) {
@@ -106,8 +123,6 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
       world.scene.three.remove(currentModel.object);
     }
     currentModel = null;
-    latestStore = null;
-    latestEntityIndex = {};
     fragments.core.update(true);
   };
 
@@ -125,6 +140,8 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
       // it is same-origin and never blocked by COEP or network issues.
       fragments.init('/thatopen-worker.mjs');
       controls.addEventListener('update', () => fragments.core.update());
+      // Count rendered frames for the live FPS readout.
+      world.renderer?.onAfterUpdate.add(() => frameRate.tick());
       fragments.list.onItemSet.add(({ value: model }) => {
         currentModel = model;
         try {
@@ -153,27 +170,16 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
         autoHighlightOnClick: true,
       });
       highlighter.events.select.onHighlight.add((selection) => {
-        if (!onSelectedCallback || !latestStore) {
-          return;
-        }
-
         const firstModelSelection = Object.values(selection)[0];
         const firstLocalId = firstModelSelection?.values().next().value;
         if (typeof firstLocalId !== 'number') {
-          onSelectedCallback(undefined);
+          onSelectedCallback?.(undefined);
           return;
         }
 
-        const existing = latestEntityIndex[firstLocalId];
-        if (existing) {
-          onSelectedCallback(existing);
-          return;
-        }
-
-        const type = latestStore.entities.getTypeName(firstLocalId);
-        const summary = buildEntitySummary(latestStore, firstLocalId, type && type !== 'UNKNOWN' ? type : 'IFCOBJECT');
-        latestEntityIndex[firstLocalId] = summary;
-        onSelectedCallback(summary);
+        // Re-aim the orbit pivot at the clicked element (works without the parser store).
+        void orbitAroundLocalId(firstLocalId);
+        onSelectedCallback?.({ expressId: firstLocalId, type: 'IFCOBJECT', name: `#${firstLocalId}`, propertyGroups: [] });
       });
 
       await controls.setLookAt(24, 18, 24, 0, 0, 0, true);
@@ -253,13 +259,7 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
       });
 
       const fragBufferStart = performance.now();
-      const [fragBuffer, parserStore] = await Promise.all([
-        model.getBuffer(false),
-        (async () => {
-          const parser = new IfcParser();
-          return parser.parseColumnar(context.buffer.slice(0));
-        })(),
-      ]);
+      const fragBuffer = await model.getBuffer(false);
       const fragBufferEnd = performance.now();
       
       const artifactsPersistStart = performance.now();
@@ -285,18 +285,6 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
       context.onMetrics(metrics);
       context.onArtifacts(artifactList);
 
-      // Build and emit spatial tree from the parsed store
-      const tree = buildSpatialTree(parserStore);
-      const entityIndex = buildEntityIndex(parserStore, tree);
-      latestStore = parserStore;
-      latestEntityIndex = entityIndex;
-      context.onTree(tree);
-      context.onEntityIndex(entityIndex);
-      const firstNode = tree[0];
-      if (firstNode) {
-        context.onSelected(entityIndex[firstNode.expressId]);
-      }
-
       context.onProgress({ phase: 'Complete', percent: 100 });
 
       // Ensure the view is zoomed to default after loading completes
@@ -304,6 +292,13 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
     },
     select() {
       // Selection highlight is handled by ThatOpen's Highlighter interaction pipeline.
+    },
+    getStats(): RuntimeStats {
+      return {
+        fps: frameRate.fps,
+        frameTimeMs: frameRate.frameTimeMs,
+        ...readHeapStats(),
+      };
     },
   };
 }

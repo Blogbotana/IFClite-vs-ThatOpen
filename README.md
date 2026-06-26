@@ -10,16 +10,13 @@ A side-by-side runtime comparison of two fully client-side IFC pipelines, built 
 
 ## Features
 
-- Single `.ifc` file selection triggers both viewers concurrently
+- Single `.ifc` file selection runs an **isolated benchmark with a page reload between engines**: IFClite is measured on a fresh page, the page reloads, then ThatOpen is measured on a fresh page. Each engine starts on a clean V8 heap, so timings, FPS and `performance.memory` are honest per-engine figures (IFClite does most of its work on the main thread, so a shared/concurrent run would skew them). The file is stashed in IndexedDB and the run phase + results in `sessionStorage` to survive the reload. Final screen shows ThatOpen's live 3D plus both engines' isolated metrics (IFClite's panel is hydrated from its stored result).
 - Live progress bars, timing metrics, and rolling logs per viewer
-- Spatial tree and property panels in **both** viewers
-- Floating overlay UI per viewer: spatial tree (left), properties (right), details panel (bottom)
-- Overlay panels are draggable, resizable, and individually closable/toggleable
-- Tree behavior: auto-expands path to selected node and scrolls selected node into view
-- Tree filtering: `IFCANNOTATION*` entities are excluded from both trees
-- Selection behavior: click-picking in viewport and tree selection are synchronized
+- Per-viewer runtime HUD: live **model-open timer**, **frame rate (FPS)**, and **JS heap memory**
+- Click an element in either viewer to **orbit the camera around the selected object**
 - IFClite selected element is highlighted directly in the WebGPU renderer
-- Artifacts (CSV, JSON, `.frag`) persisted to OPFS when available
+- Floating, draggable details panel (stats / logs) per viewer
+- Artifacts (`.bos`, JSON, `.frag`) persisted to OPFS when available
 - Reset view button per viewer
 
 ## Stack
@@ -41,7 +38,7 @@ A side-by-side runtime comparison of two fully client-side IFC pipelines, built 
 | `@thatopen/components-front` | `PostproductionRenderer` (Three.js + post-processing) |
 | `@thatopen/fragments` | Fragment streaming worker and `.frag` binary format |
 | `web-ifc` | WASM IFC parser used internally by ThatOpen |
-| `three` | Three.js r182 — scene graph for the ThatOpen side |
+| `three` | Three.js r185 — scene graph for the ThatOpen side |
 
 ### Dev/build tooling
 
@@ -90,5 +87,7 @@ public/
 - ThatOpen viewport picking uses `@thatopen/components-front` `Highlighter` and maps selected IDs to shared entity summaries.
 - Spatial trees are built from a shared helper (`src/lib/ifc-tree.ts`) for consistent output across both viewers.
 - Both viewer adapters are loaded via dynamic `import()` inside the React init effect, so Vite emits them as separate async chunks. The app shell loads first; viewer chunks are fetched in parallel once the canvas elements are mounted.
-- IFClite artifacts: `entities.csv`, `spatial-hierarchy.csv`, `metrics.json`, and `model.bos` (parquet/BOS geometry export, best-effort).
+- IFClite artifacts: `metrics.json` and `model.bos` (parquet/BOS geometry export, best-effort). CSV export was dropped when `@ifc-lite/export` removed `CSVExporter` in v2.
 - ThatOpen artifacts: `<model>.frag` binary fragment buffer and `metrics.json`.
+- Orbit-around-selection: IFClite raycasts the clicked surface point and calls `camera.setOrbitCenter(...)`; ThatOpen reads the selected element's bounding box (`model.getBoxes`) and calls `controls.setOrbitPoint(...)`.
+- The runtime HUD reads frame rate from each adapter's render loop (`getStats()`) and JS heap usage from the non-standard, Chromium-only `performance.memory` (a page-level figure shared by both viewers).

@@ -1,38 +1,32 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getPersistedArtifactUrl } from './lib/file-system';
-import type { EntitySummary, TreeNode, ViewerAdapter, ViewerMetric, ViewerState } from './types';
+import {
+  type BenchPhase,
+  type EngineResult,
+  getBenchPhase,
+  getBenchFileName,
+  getBenchFileSize,
+  loadBenchFile,
+  loadEngineResult,
+  saveEngineResult,
+  setBenchPhase,
+  startBench,
+} from './lib/bench-store';
+import type {
+  ArtifactInfo,
+  EntitySummary,
+  RuntimeStats,
+  TreeNode,
+  ViewerAdapter,
+  ViewerMetric,
+  ViewerState,
+} from './types';
 
 function IconBase({ children }: { children: React.ReactNode }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {children}
     </svg>
-  );
-}
-
-function TreeIcon() {
-  return (
-    <IconBase>
-      <circle cx="7" cy="5" r="2" />
-      <circle cx="17" cy="12" r="2" />
-      <circle cx="11" cy="19" r="2" />
-      <path d="M7 7v10" />
-      <path d="M7 12h8" />
-      <path d="M7 19h2" />
-    </IconBase>
-  );
-}
-
-function PropertiesIcon() {
-  return (
-    <IconBase>
-      <circle cx="7" cy="7" r="2" />
-      <circle cx="17" cy="12" r="2" />
-      <circle cx="9" cy="17" r="2" />
-      <path d="M9 7h12" />
-      <path d="M3 12h12" />
-      <path d="M11 17h10" />
-    </IconBase>
   );
 }
 
@@ -96,89 +90,8 @@ function PanelTitle({
 }
 
 // ---------------------------------------------------------------------------
-// Draggable panel hook
+// Draggable panel hook (bottom-anchored details panel)
 // ---------------------------------------------------------------------------
-function useDraggablePanel(initialX: number, initialY: number) {
-  const [pos, setPos] = useState({ x: initialX, y: initialY });
-  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
-  const posRef = useRef(pos);
-  posRef.current = pos;
-
-  const onHeaderMouseDown = useCallback((e: React.MouseEvent) => {
-    dragRef.current = { sx: e.clientX, sy: e.clientY, ox: posRef.current.x, oy: posRef.current.y };
-    e.preventDefault();
-  }, []);
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragRef.current) return;
-      setPos({
-        x: dragRef.current.ox + e.clientX - dragRef.current.sx,
-        y: dragRef.current.oy + e.clientY - dragRef.current.sy,
-      });
-    };
-    const onUp = () => { dragRef.current = null; };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, []);
-
-  return { pos, onHeaderMouseDown };
-}
-
-function useDraggablePanelFromRight(initialRight: number, initialY: number) {
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | { right: number; top: number }>({
-    right: initialRight,
-    top: initialY,
-  });
-  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
-  const posRef = useRef(pos);
-  posRef.current = pos;
-
-  const onHeaderMouseDown = useCallback((e: React.MouseEvent) => {
-    const panelEl = panelRef.current;
-    if (!panelEl) {
-      return;
-    }
-
-    const parentEl = panelEl.offsetParent as HTMLElement | null;
-    const parentRect = parentEl?.getBoundingClientRect();
-    const panelRect = panelEl.getBoundingClientRect();
-    const currentLeft = panelRect.left - (parentRect?.left ?? 0);
-    const currentTop = panelRect.top - (parentRect?.top ?? 0);
-
-    dragRef.current = { sx: e.clientX, sy: e.clientY, ox: currentLeft, oy: currentTop };
-    setPos({ left: currentLeft, top: currentTop });
-    e.preventDefault();
-  }, []);
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragRef.current) return;
-      setPos({
-        left: dragRef.current.ox + e.clientX - dragRef.current.sx,
-        top: dragRef.current.oy + e.clientY - dragRef.current.sy,
-      });
-    };
-    const onUp = () => {
-      dragRef.current = null;
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, []);
-
-  const style = 'left' in pos ? ({ left: pos.left, top: pos.top } as const) : ({ right: pos.right, top: pos.top } as const);
-  return { panelRef, style, onHeaderMouseDown };
-}
-
 function useDraggablePanelFromBottom(initialX: number, initialBottom: number) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | { left: number; bottom: number }>({
@@ -187,7 +100,7 @@ function useDraggablePanelFromBottom(initialX: number, initialBottom: number) {
   });
   const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
 
-  const onHeaderMouseDown = useCallback((e: React.MouseEvent) => {
+  const onHeaderMouseDown = (e: React.MouseEvent) => {
     const panelEl = panelRef.current;
     if (!panelEl) {
       return;
@@ -202,7 +115,7 @@ function useDraggablePanelFromBottom(initialX: number, initialBottom: number) {
     dragRef.current = { sx: e.clientX, sy: e.clientY, ox: currentLeft, oy: currentTop };
     setPos({ left: currentLeft, top: currentTop });
     e.preventDefault();
-  }, []);
+  };
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -227,190 +140,6 @@ function useDraggablePanelFromBottom(initialX: number, initialBottom: number) {
   return { panelRef, style, onHeaderMouseDown };
 }
 
-// ---------------------------------------------------------------------------
-// Spatial tree components
-// ---------------------------------------------------------------------------
-function SpatialTreeNode({
-  node,
-  entityIndex,
-  selectedId,
-  forcedExpandedIds,
-  onSelect,
-}: {
-  node: TreeNode;
-  entityIndex: Record<number, EntitySummary>;
-  selectedId?: number;
-  forcedExpandedIds: Set<number>;
-  onSelect: (entity: EntitySummary) => void;
-}) {
-  const [userExpanded, setUserExpanded] = useState(node.children.length > 0 && node.children.length < 10);
-  const isSelected = selectedId === node.expressId;
-  const entity = entityIndex[node.expressId];
-  const hasChildren = node.children.length > 0;
-  const isExpanded = hasChildren && (forcedExpandedIds.has(node.expressId) || userExpanded);
-  const rowRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (isSelected) {
-      rowRef.current?.scrollIntoView({ block: 'nearest' });
-    }
-  }, [isSelected]);
-
-  return (
-    <div className="tree-item">
-      <div
-        ref={rowRef}
-        data-tree-express-id={node.expressId}
-        className={`tree-row${isSelected ? ' selected' : ''}`}
-        onClick={() => entity && onSelect(entity)}
-      >
-        {hasChildren ? (
-          <button
-            className="tree-toggle"
-            type="button"
-            onClick={(e) => { e.stopPropagation(); setUserExpanded((v) => !v); }}
-          >
-            {isExpanded ? '▾' : '▸'}
-          </button>
-        ) : (
-          <span className="tree-toggle-placeholder" />
-        )}
-        <span className="tree-label">
-          <span className="tree-name">{node.name || node.type}</span>
-          <span className="tree-type">{node.type}</span>
-        </span>
-      </div>
-      {isExpanded && (
-        <div className="tree-children">
-          {node.children.map((child) => (
-            <SpatialTreeNode
-              key={child.expressId}
-              node={child}
-              entityIndex={entityIndex}
-              selectedId={selectedId}
-              forcedExpandedIds={forcedExpandedIds}
-              onSelect={onSelect}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function SpatialTreePanel({
-  tree,
-  entityIndex,
-  selected,
-  onSelect,
-  onClose,
-}: {
-  tree: TreeNode[];
-  entityIndex: Record<number, EntitySummary>;
-  selected?: EntitySummary;
-  onSelect: (entity: EntitySummary) => void;
-  onClose: () => void;
-}) {
-  const { pos, onHeaderMouseDown } = useDraggablePanel(10, 10);
-
-  const expandedPathIds = useMemo(() => {
-    const selectedExpressId = selected?.expressId;
-    if (!selectedExpressId) {
-      return new Set<number>();
-    }
-
-    const path = new Set<number>();
-    const walk = (nodes: TreeNode[]): boolean => {
-      for (const node of nodes) {
-        if (node.expressId === selectedExpressId) {
-          path.add(node.expressId);
-          return true;
-        }
-        if (walk(node.children)) {
-          path.add(node.expressId);
-          return true;
-        }
-      }
-      return false;
-    };
-
-    walk(tree);
-    return path;
-  }, [tree, selected?.expressId]);
-
-  useEffect(() => {
-    const selectedExpressId = selected?.expressId;
-    if (!selectedExpressId) {
-      return;
-    }
-
-    const handle = requestAnimationFrame(() => {
-      const row = document.querySelector<HTMLDivElement>(`[data-tree-express-id="${selectedExpressId}"]`);
-      row?.scrollIntoView({ block: 'nearest' });
-    });
-
-    return () => cancelAnimationFrame(handle);
-  }, [selected?.expressId, expandedPathIds]);
-
-  return (
-    <div className="floating-panel tree-panel" style={{ left: pos.x, top: pos.y }}>
-      <div className="floating-panel-header" onMouseDown={onHeaderMouseDown}>
-        <PanelTitle icon={<TreeIcon />} text="Spatial Tree" />
-        <button className="floating-close" type="button" onClick={onClose}>✕</button>
-      </div>
-      <div className="floating-panel-body tree-body">
-        {tree.map((node) => (
-          <SpatialTreeNode
-            key={node.expressId}
-            node={node}
-            entityIndex={entityIndex}
-            selectedId={selected?.expressId}
-            forcedExpandedIds={expandedPathIds}
-            onSelect={onSelect}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function PropertiesPanel({
-  entity,
-  onClose,
-}: {
-  entity: EntitySummary;
-  onClose: () => void;
-}) {
-  const { panelRef, style, onHeaderMouseDown } = useDraggablePanelFromRight(10, 10);
-  return (
-    <div ref={panelRef} className="floating-panel props-panel" style={style}>
-      <div className="floating-panel-header" onMouseDown={onHeaderMouseDown}>
-        <span className="floating-panel-title" title={entity.name || entity.type}>
-          <PanelTitle icon={<PropertiesIcon />} text={entity.name || entity.type} />
-        </span>
-        <button className="floating-close" type="button" onClick={onClose}>✕</button>
-      </div>
-      <div className="floating-panel-body props-body">
-        <div className="props-summary">
-          <span className="props-type-badge">{entity.type}</span>
-          {entity.globalId && <span className="props-guid" title={entity.globalId}>{entity.globalId}</span>}
-        </div>
-        {entity.propertyGroups.map((group) => (
-          <section className="info-group" key={group.name}>
-            <h4>{group.name}</h4>
-            {group.entries.map((entry) => (
-              <div className="property-row" key={entry.name}>
-                <span>{entry.name}</span>
-                <strong>{entry.value}</strong>
-              </div>
-            ))}
-          </section>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 const initialViewerState = (): ViewerState => ({
   ready: false,
   busy: false,
@@ -432,22 +161,33 @@ function formatBytes(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function formatSeconds(ms: number): string {
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
 function useViewerState(title: string) {
   const [state, setState] = useState<ViewerState>(initialViewerState);
 
   const api = useMemo(
     () => ({
-      resetForRun() {
+      resetForRun(phase = 'Initializing') {
         setState({
           ready: true,
           busy: true,
-          progress: { phase: 'Initializing', percent: 0 },
+          progress: { phase, percent: 0 },
           logs: [`${title}: reset`, `${title}: waiting for parsing pipeline`],
           metrics: [],
           artifacts: [],
           tree: [],
           entityIndex: {},
+          openStartedAt: undefined,
+          openMs: undefined,
         });
+      },
+      // Start the model-open stopwatch for this viewer. Called right before the
+      // adapter begins work so each engine is timed in isolation (sequential runs).
+      startTimer() {
+        setState((current) => ({ ...current, openStartedAt: performance.now(), openMs: undefined }));
       },
       markReady() {
         setState((current) => ({ ...current, ready: true }));
@@ -457,11 +197,16 @@ function useViewerState(title: string) {
           ...current,
           busy: false,
           error,
+          openMs: current.openStartedAt !== undefined ? performance.now() - current.openStartedAt : current.openMs,
           logs: [...current.logs, `${title}: ERROR ${error}`],
         }));
       },
       finish() {
-        setState((current) => ({ ...current, busy: false }));
+        setState((current) => ({
+          ...current,
+          busy: false,
+          openMs: current.openStartedAt !== undefined ? performance.now() - current.openStartedAt : current.openMs,
+        }));
       },
       setProgress(phase: string, percent: number) {
         setState((current) => ({ ...current, progress: { phase, percent } }));
@@ -484,6 +229,21 @@ function useViewerState(title: string) {
       setSelected(entity?: EntitySummary) {
         setState((current) => ({ ...current, selected: entity }));
       },
+      // Restore a finished viewer from a stored benchmark result (used for the
+      // engine that was measured on a previous, now-reloaded, page).
+      hydrate(result: { metrics: ViewerMetric[]; artifacts: ArtifactInfo[]; logs: string[]; openMs?: number; error?: string }) {
+        setState((current) => ({
+          ...current,
+          ready: true,
+          busy: false,
+          error: result.error,
+          progress: { phase: result.error ? 'Error' : 'Complete', percent: 100 },
+          logs: result.logs,
+          metrics: result.metrics,
+          artifacts: result.artifacts,
+          openMs: result.openMs,
+        }));
+      },
     }),
     [title],
   );
@@ -496,7 +256,7 @@ const INFO_GROUPS: { label: string; keys: string[] }[] = [
   {
     label: 'Performance',
     keys: [
-      'IFC paring time',
+      'IFC parsing time',
       'IFC conversion time',
       'First geometry frame',
       'Render ready time',
@@ -684,35 +444,77 @@ function BottomInfoPanel({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Heads-up display: live model-open timer, frame rate, and heap memory
+// ---------------------------------------------------------------------------
+function ViewerHud({ state, stats }: { state: ViewerState; stats: RuntimeStats | null }) {
+  const [, forceTick] = useState(0);
+
+  // While a model is opening, repaint the live stopwatch each frame.
+  const isTiming = state.busy && state.openStartedAt !== undefined && state.openMs === undefined;
+  useEffect(() => {
+    if (!isTiming) {
+      return undefined;
+    }
+    let raf = 0;
+    const loop = () => {
+      forceTick((n) => (n + 1) & 0xffff);
+      raf = window.requestAnimationFrame(loop);
+    };
+    raf = window.requestAnimationFrame(loop);
+    return () => window.cancelAnimationFrame(raf);
+  }, [isTiming]);
+
+  const openLabel = (() => {
+    if (state.openMs !== undefined) {
+      return formatSeconds(state.openMs);
+    }
+    if (isTiming && state.openStartedAt !== undefined) {
+      return formatSeconds(performance.now() - state.openStartedAt);
+    }
+    return '—';
+  })();
+
+  const fpsLabel = stats && stats.fps > 0 ? `${Math.round(stats.fps)} fps` : '—';
+  const heapLabel = stats?.heapUsedBytes !== undefined ? formatBytes(stats.heapUsedBytes) : 'n/a';
+
+  return (
+    <div className="viewer-hud" aria-label="Viewer runtime statistics">
+      <div className={`hud-metric${isTiming ? ' active' : ''}`}>
+        <span className="hud-label">Open time</span>
+        <span className="hud-value">{openLabel}</span>
+      </div>
+      <div className="hud-metric">
+        <span className="hud-label">Frame rate</span>
+        <span className="hud-value">{fpsLabel}</span>
+      </div>
+      <div className="hud-metric">
+        <span className="hud-label">Memory (heap)</span>
+        <span className="hud-value">{heapLabel}</span>
+      </div>
+    </div>
+  );
+}
+
 function ViewerPanel({
   title,
   state,
+  stats,
   canvasRef,
   hostRef,
   onReset,
-  onSelectEntity,
+  note,
 }: {
   title: string;
   state: ViewerState;
+  stats: RuntimeStats | null;
   canvasRef?: React.RefObject<HTMLCanvasElement | null>;
   hostRef?: React.RefObject<HTMLDivElement | null>;
   onReset: () => void;
-  onSelectEntity: (entity: EntitySummary) => void;
+  note?: string;
 }) {
   const [activeTab, setActiveTab] = useState<'info' | 'logs'>('info');
-  const [showTree, setShowTree] = useState(false);
-  const [showProps, setShowProps] = useState(false);
   const [showBottomPanel, setShowBottomPanel] = useState(true);
-
-  const treePopulated = state.tree.length > 0;
-  useEffect(() => {
-    if (treePopulated) setShowTree(true);
-  }, [treePopulated]);
-
-  const selectedId = state.selected?.expressId;
-  useEffect(() => {
-    if (selectedId !== undefined) setShowProps(true);
-  }, [selectedId]);
 
   return (
     <section className="viewer-panel">
@@ -721,24 +523,6 @@ function ViewerPanel({
           <h2>{title}</h2>
         </div>
         <div className="viewer-header-actions" role="toolbar" aria-label={`${title} viewer tools`}>
-          {treePopulated && (
-            <IconToolbarButton
-              label={showTree ? 'Hide spatial tree' : 'Show spatial tree'}
-              onClick={() => setShowTree((v) => !v)}
-              pressed={showTree}
-            >
-              <TreeIcon />
-            </IconToolbarButton>
-          )}
-          {state.selected && (
-            <IconToolbarButton
-              label={showProps ? 'Hide properties' : 'Show properties'}
-              onClick={() => setShowProps((v) => !v)}
-              pressed={showProps}
-            >
-              <PropertiesIcon />
-            </IconToolbarButton>
-          )}
           <IconToolbarButton
             label={showBottomPanel ? 'Hide details panel' : 'Show details panel'}
             onClick={() => setShowBottomPanel((v) => !v)}
@@ -755,21 +539,8 @@ function ViewerPanel({
       <div className="viewer-top">
         <div className="canvas-shell">
           {canvasRef ? <canvas ref={canvasRef} className="viewer-canvas" /> : <div ref={hostRef} className="viewer-host" />}
-          {showTree && treePopulated && (
-            <SpatialTreePanel
-              tree={state.tree}
-              entityIndex={state.entityIndex}
-              selected={state.selected}
-              onSelect={onSelectEntity}
-              onClose={() => setShowTree(false)}
-            />
-          )}
-          {showProps && state.selected && (
-            <PropertiesPanel
-              entity={state.selected}
-              onClose={() => setShowProps(false)}
-            />
-          )}
+          {note && <div className="viewport-note">{note}</div>}
+          <ViewerHud state={state} stats={stats} />
           {showBottomPanel && (
             <BottomInfoPanel
               state={state}
@@ -784,130 +555,220 @@ function ViewerPanel({
   );
 }
 
+function resultToStats(result: EngineResult | null): RuntimeStats | null {
+  if (!result) {
+    return null;
+  }
+  return { fps: result.fps ?? 0, frameTimeMs: 0, heapUsedBytes: result.heapUsedBytes };
+}
+
 export default function App() {
   const ifcLiteCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const thatOpenHostRef = useRef<HTMLDivElement | null>(null);
   const ifcLiteAdapterRef = useRef<ViewerAdapter | null>(null);
   const thatOpenAdapterRef = useRef<ViewerAdapter | null>(null);
 
-  const [currentFile, setCurrentFile] = useState<File | null>(null);
-  const selectedFileName = currentFile?.name ?? 'No IFC file selected';
-  const selectedFileSize = currentFile ? formatBytes(currentFile.size) : '—';
+  // The benchmark phase is fixed for the lifetime of a page load; transitions
+  // happen via setBenchPhase(...) + a reload so each engine is measured fresh.
+  const [phase] = useState<BenchPhase>(getBenchPhase);
+
+  const selectedFileName = getBenchFileName() ?? 'No IFC file selected';
+  const benchSize = getBenchFileSize();
+  const selectedFileSize = benchSize !== null ? formatBytes(benchSize) : '—';
 
   const ifcLite = useViewerState('IFClite');
   const thatOpen = useViewerState('ThatOpen');
+
+  const [ifcLiteStats, setIfcLiteStats] = useState<RuntimeStats | null>(null);
+  const [thatOpenStats, setThatOpenStats] = useState<RuntimeStats | null>(null);
+
+  // IFClite is measured on its own page, so in later phases its panel is
+  // hydrated from the stored result and its canvas stays empty.
+  const ifcLiteMeasuredOnly = phase === 'thatopen' || phase === 'done';
+  const ifcLiteStored = useMemo(() => loadEngineResult('ifclite'), []);
+
   const schemaFromIfcLite = viewerLabelValue(ifcLite.state.metrics, 'Schema');
   const schemaFromThatOpen = viewerLabelValue(thatOpen.state.metrics, 'Schema');
   const selectedFileSchema =
-    currentFile && schemaFromIfcLite !== '—'
-      ? schemaFromIfcLite
-      : currentFile && schemaFromThatOpen !== '—'
-      ? schemaFromThatOpen
-      : '—';
+    schemaFromIfcLite !== '—' ? schemaFromIfcLite : schemaFromThatOpen !== '—' ? schemaFromThatOpen : '—';
 
   useEffect(() => {
-    if (!ifcLiteCanvasRef.current || !thatOpenHostRef.current) {
+    const canvas = ifcLiteCanvasRef.current;
+    const host = thatOpenHostRef.current;
+    if (!canvas || !host) {
       return undefined;
     }
 
     let disposed = false;
-    let ifcLiteAdapter: import('./types').ViewerAdapter | null = null;
-    let thatOpenAdapter: import('./types').ViewerAdapter | null = null;
+    let ifcLiteAdapter: ViewerAdapter | null = null;
+    let thatOpenAdapter: ViewerAdapter | null = null;
 
-    const canvas = ifcLiteCanvasRef.current;
-    const host = thatOpenHostRef.current;
+    // Run one engine's pipeline, mirroring progress into the live UI while also
+    // collecting a serialisable result to persist across the reload.
+    const measure = async (
+      adapter: ViewerAdapter,
+      api: ReturnType<typeof useViewerState>['api'],
+      title: string,
+      file: { name: string; buffer: ArrayBuffer },
+    ): Promise<EngineResult> => {
+      const logs: string[] = [];
+      let metrics: ViewerMetric[] = [];
+      let artifacts: ArtifactInfo[] = [];
+      let error: string | undefined;
 
-    void Promise.all([
-      import(/* webpackChunkName: "viewer-ifclite" */ './lib/ifclite'),
-      import(/* webpackChunkName: "viewer-thatopen" */ './lib/thatopen'),
-    ]).then(([{ createIfcLiteAdapter }, { createThatOpenAdapter }]) => {
+      api.resetForRun();
+      api.startTimer();
+      const startedAt = performance.now();
+      try {
+        await adapter.load({
+          file: new File([file.buffer], file.name),
+          buffer: file.buffer,
+          onProgress: ({ phase: p, percent }) => !disposed && api.setProgress(p, percent),
+          onLog: (message) => {
+            logs.push(message);
+            if (!disposed) api.appendLog(message);
+          },
+          onMetrics: (m) => {
+            metrics = m;
+            if (!disposed) api.setMetrics(m);
+          },
+          onArtifacts: (a) => {
+            artifacts = a;
+            if (!disposed) api.setArtifacts(a);
+          },
+          onTree: () => {},
+          onEntityIndex: () => {},
+          onSelected: (entity) => !disposed && api.setSelected(entity),
+        });
+        logs.push(`${title}: pipeline completed.`);
+        if (!disposed) {
+          api.finish();
+          api.appendLog(`${title}: pipeline completed.`);
+        }
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+        if (!disposed) api.setError(error);
+      }
+
+      const openMs = performance.now() - startedAt;
+      const snap = adapter.getStats?.();
+      return { metrics, artifacts, logs, openMs, error, fps: snap?.fps, heapUsedBytes: snap?.heapUsedBytes };
+    };
+
+    const orchestrate = async () => {
+      const [{ createIfcLiteAdapter }, { createThatOpenAdapter }] = await Promise.all([
+        import(/* webpackChunkName: "viewer-ifclite" */ './lib/ifclite'),
+        import(/* webpackChunkName: "viewer-thatopen" */ './lib/thatopen'),
+      ]);
       if (disposed) return;
-      ifcLiteAdapter = createIfcLiteAdapter(canvas);
+
+      // Idle: no benchmark in progress — initialise both viewers as empty previews.
+      if (phase === 'idle') {
+        ifcLiteAdapter = createIfcLiteAdapter(canvas);
+        thatOpenAdapter = createThatOpenAdapter(host);
+        ifcLiteAdapterRef.current = ifcLiteAdapter;
+        thatOpenAdapterRef.current = thatOpenAdapter;
+        await Promise.all([ifcLiteAdapter.init(), thatOpenAdapter.init()]);
+        if (disposed) return;
+        ifcLite.api.markReady();
+        thatOpen.api.markReady();
+        ifcLite.api.appendLog('IFClite viewer initialized.');
+        thatOpen.api.appendLog('ThatOpen viewer initialized.');
+        return;
+      }
+
+      const file = await loadBenchFile();
+      if (!file || disposed) return;
+
+      if (phase === 'ifclite') {
+        // Fresh page: only IFClite exists, so it is measured in isolation.
+        ifcLiteAdapter = createIfcLiteAdapter(canvas);
+        ifcLiteAdapterRef.current = ifcLiteAdapter;
+        await ifcLiteAdapter.init();
+        if (disposed) return;
+        ifcLite.api.markReady();
+        const result = await measure(ifcLiteAdapter, ifcLite.api, 'IFClite', file);
+        if (disposed) return;
+        saveEngineResult('ifclite', result);
+        setBenchPhase('thatopen');
+        // Let the completed state paint briefly, then reload into the ThatOpen run.
+        window.setTimeout(() => window.location.reload(), 700);
+        return;
+      }
+
+      // phase === 'thatopen' | 'done': IFClite panel is restored from its stored
+      // result; ThatOpen is the live viewer.
+      if (ifcLiteStored) {
+        ifcLite.api.hydrate(ifcLiteStored);
+      }
       thatOpenAdapter = createThatOpenAdapter(host);
-      ifcLiteAdapterRef.current = ifcLiteAdapter;
       thatOpenAdapterRef.current = thatOpenAdapter;
-
-      return Promise.all([ifcLiteAdapter.init(), thatOpenAdapter.init()]);
-    }).then(() => {
+      await thatOpenAdapter.init();
       if (disposed) return;
-      ifcLite.api.markReady();
       thatOpen.api.markReady();
-      ifcLite.api.appendLog('IFClite viewer initialized.');
-      thatOpen.api.appendLog('ThatOpen viewer initialized.');
-    });
+
+      if (phase === 'thatopen') {
+        const result = await measure(thatOpenAdapter, thatOpen.api, 'ThatOpen', file);
+        if (disposed) return;
+        saveEngineResult('thatopen', result);
+        setBenchPhase('done');
+        // Stay on this page: ThatOpen's 3D view is live and both metric sets are shown.
+        return;
+      }
+
+      // phase === 'done' (manual reload after completion): restore metrics and
+      // re-load ThatOpen purely for viewing, without overwriting stored metrics.
+      const stored = loadEngineResult('thatopen');
+      if (stored) {
+        thatOpen.api.hydrate(stored);
+      }
+      await thatOpenAdapter.load({
+        file: new File([file.buffer], file.name),
+        buffer: file.buffer,
+        onProgress: () => {},
+        onLog: () => {},
+        onMetrics: () => {},
+        onArtifacts: () => {},
+        onTree: () => {},
+        onEntityIndex: () => {},
+        onSelected: (entity) => !disposed && thatOpen.api.setSelected(entity),
+      });
+    };
+
+    void orchestrate();
 
     return () => {
       disposed = true;
       ifcLiteAdapter?.dispose();
       thatOpenAdapter?.dispose();
     };
-  }, [ifcLite.api, thatOpen.api]);
+  }, [phase, ifcLite.api, thatOpen.api, ifcLiteStored]);
 
+  // Poll live frame-rate / memory statistics from both adapters.
   useEffect(() => {
-    if (!currentFile || !ifcLiteAdapterRef.current || !thatOpenAdapterRef.current) {
-      return;
-    }
+    const interval = window.setInterval(() => {
+      setIfcLiteStats(ifcLiteAdapterRef.current?.getStats?.() ?? null);
+      setThatOpenStats(thatOpenAdapterRef.current?.getStats?.() ?? null);
+    }, 250);
+    return () => window.clearInterval(interval);
+  }, []);
 
-    let cancelled = false;
-    const run = async () => {
-      ifcLite.api.resetForRun();
-      thatOpen.api.resetForRun();
-
-      const buffer = await currentFile.arrayBuffer();
-      const execute = async (
-        adapter: ViewerAdapter,
-        api: ReturnType<typeof useViewerState>['api'],
-        title: string,
-      ) => {
-        try {
-          await adapter.load({
-            file: currentFile,
-            buffer,
-            onProgress: ({ phase, percent }) => !cancelled && api.setProgress(phase, percent),
-            onLog: (message) => !cancelled && api.appendLog(message),
-            onMetrics: (metrics) => !cancelled && api.setMetrics(metrics),
-            onArtifacts: (artifacts) => !cancelled && api.setArtifacts(artifacts),
-            onTree: (tree) => !cancelled && api.setTree(tree),
-            onEntityIndex: (entityIndex) => !cancelled && api.setEntityIndex(entityIndex),
-            onSelected: (entity) => !cancelled && api.setSelected(entity),
-          });
-          if (!cancelled) {
-            api.finish();
-            api.appendLog(`${title}: pipeline completed.`);
-          }
-        } catch (error) {
-          if (!cancelled) {
-            api.setError(error instanceof Error ? error.message : String(error));
-          }
-        }
-      };
-
-      const ifcLiteAdapter = ifcLiteAdapterRef.current;
-      const thatOpenAdapter = thatOpenAdapterRef.current;
-      if (!ifcLiteAdapter || !thatOpenAdapter) {
-        return;
-      }
-
-      await Promise.allSettled([
-        execute(ifcLiteAdapter, ifcLite.api, 'IFClite'),
-        execute(thatOpenAdapter, thatOpen.api, 'ThatOpen'),
-      ]);
-    };
-
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentFile, ifcLite.api, thatOpen.api]);
-
-  const onBrowse = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const onBrowse = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    event.currentTarget.value = '';
     if (!file) {
       return;
     }
-    setCurrentFile(file);
-    event.currentTarget.value = '';
+    // Persist the file + arm the benchmark, then reload so IFClite runs on a
+    // clean page (fresh V8 heap → honest per-engine timing and memory).
+    await startBench(file);
+    window.location.reload();
   };
+
+  const ifcLiteNote = ifcLiteMeasuredOnly
+    ? 'Measured in isolation on a separate page — see metrics below'
+    : undefined;
+  const thatOpenNote = phase === 'ifclite' ? 'Queued — runs after the page reloads' : undefined;
 
   return (
     <main className="app-shell">
@@ -921,6 +782,15 @@ export default function App() {
           <strong>{selectedFileName}</strong>
           <span className="file-meta file-meta-size">{selectedFileSize}</span>
           <span className="file-meta">Schema: {selectedFileSchema}</span>
+          {phase !== 'idle' && (
+            <span className="file-meta">
+              {phase === 'ifclite'
+                ? 'Measuring IFClite…'
+                : phase === 'thatopen'
+                ? 'Measuring ThatOpen…'
+                : 'Sequential isolated benchmark'}
+            </span>
+          )}
         </div>
       </header>
 
@@ -928,22 +798,18 @@ export default function App() {
         <ViewerPanel
           title="IFClite"
           state={ifcLite.state}
+          stats={ifcLiteMeasuredOnly ? resultToStats(ifcLiteStored) : ifcLiteStats}
           canvasRef={ifcLiteCanvasRef}
           onReset={() => void ifcLiteAdapterRef.current?.reset()}
-          onSelectEntity={(entity) => {
-            ifcLite.api.setSelected(entity);
-            void ifcLiteAdapterRef.current?.select?.(entity.expressId);
-          }}
+          note={ifcLiteNote}
         />
         <ViewerPanel
           title="ThatOpen"
           state={thatOpen.state}
+          stats={thatOpenStats}
           hostRef={thatOpenHostRef}
           onReset={() => void thatOpenAdapterRef.current?.reset()}
-          onSelectEntity={(entity) => {
-            thatOpen.api.setSelected(entity);
-            void thatOpenAdapterRef.current?.select?.(entity.expressId);
-          }}
+          note={thatOpenNote}
         />
       </section>
     </main>
