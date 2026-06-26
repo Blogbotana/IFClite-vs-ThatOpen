@@ -3,6 +3,7 @@ import { getPersistedArtifactUrl } from './lib/file-system';
 import {
   type BenchPhase,
   type EngineResult,
+  clearBenchSession,
   getBenchPhase,
   getBenchFileName,
   getBenchFileSize,
@@ -15,7 +16,6 @@ import {
 import type {
   ArtifactInfo,
   EntitySummary,
-  RuntimeStats,
   TreeNode,
   ViewerAdapter,
   ViewerMetric,
@@ -30,16 +30,6 @@ function IconBase({ children }: { children: React.ReactNode }) {
   );
 }
 
-function DetailsIcon() {
-  return (
-    <IconBase>
-      <path d="M4 6h16" />
-      <path d="M4 12h16" />
-      <path d="M4 18h10" />
-    </IconBase>
-  );
-}
-
 function HomeIcon() {
   return (
     <IconBase>
@@ -51,93 +41,18 @@ function HomeIcon() {
 
 function IconToolbarButton({
   label,
-  pressed,
   onClick,
   children,
 }: {
   label: string;
-  pressed?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <button
-      className={`toolbar-icon-btn${pressed ? ' active' : ''}`}
-      onClick={onClick}
-      type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={pressed}
-    >
+    <button className="toolbar-icon-btn" onClick={onClick} type="button" title={label} aria-label={label}>
       {children}
     </button>
   );
-}
-
-function PanelTitle({
-  icon,
-  text,
-}: {
-  icon: React.ReactNode;
-  text: string;
-}) {
-  return (
-    <span className="floating-panel-caption">
-      <span className="floating-panel-icon" aria-hidden="true">{icon}</span>
-      <span>{text}</span>
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Draggable panel hook (bottom-anchored details panel)
-// ---------------------------------------------------------------------------
-function useDraggablePanelFromBottom(initialX: number, initialBottom: number) {
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | { left: number; bottom: number }>({
-    left: initialX,
-    bottom: initialBottom,
-  });
-  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
-
-  const onHeaderMouseDown = (e: React.MouseEvent) => {
-    const panelEl = panelRef.current;
-    if (!panelEl) {
-      return;
-    }
-
-    const parentEl = panelEl.offsetParent as HTMLElement | null;
-    const parentRect = parentEl?.getBoundingClientRect();
-    const panelRect = panelEl.getBoundingClientRect();
-    const currentLeft = panelRect.left - (parentRect?.left ?? 0);
-    const currentTop = panelRect.top - (parentRect?.top ?? 0);
-
-    dragRef.current = { sx: e.clientX, sy: e.clientY, ox: currentLeft, oy: currentTop };
-    setPos({ left: currentLeft, top: currentTop });
-    e.preventDefault();
-  };
-
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      if (!dragRef.current) return;
-      setPos({
-        left: dragRef.current.ox + e.clientX - dragRef.current.sx,
-        top: dragRef.current.oy + e.clientY - dragRef.current.sy,
-      });
-    };
-    const onUp = () => {
-      dragRef.current = null;
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, []);
-
-  const style = 'top' in pos ? ({ left: pos.left, top: pos.top } as const) : ({ left: pos.left, bottom: pos.bottom } as const);
-  return { panelRef, style, onHeaderMouseDown };
 }
 
 const initialViewerState = (): ViewerState => ({
@@ -165,6 +80,25 @@ function formatSeconds(ms: number): string {
   return `${(ms / 1000).toFixed(2)} s`;
 }
 
+// Extract a comparable number from a formatted metric string, normalising to a
+// base unit (time → ms, size → bytes, counts → plain).
+function parseMetricNumber(value: string): number | null {
+  const match = value.match(/([\d.,]+)\s*(ms|s|MB|KB|B)?/i);
+  if (!match) return null;
+  const n = parseFloat(match[1].replace(/,/g, ''));
+  if (!Number.isFinite(n)) return null;
+  switch ((match[2] ?? '').toLowerCase()) {
+    case 's':
+      return n * 1000;
+    case 'mb':
+      return n * 1024 * 1024;
+    case 'kb':
+      return n * 1024;
+    default:
+      return n;
+  }
+}
+
 function useViewerState(title: string) {
   const [state, setState] = useState<ViewerState>(initialViewerState);
 
@@ -185,7 +119,7 @@ function useViewerState(title: string) {
         });
       },
       // Start the model-open stopwatch for this viewer. Called right before the
-      // adapter begins work so each engine is timed in isolation (sequential runs).
+      // adapter begins work so each engine is timed in isolation.
       startTimer() {
         setState((current) => ({ ...current, openStartedAt: performance.now(), openMs: undefined }));
       },
@@ -231,7 +165,7 @@ function useViewerState(title: string) {
       },
       // Restore a finished viewer from a stored benchmark result (used for the
       // engine that was measured on a previous, now-reloaded, page).
-      hydrate(result: { metrics: ViewerMetric[]; artifacts: ArtifactInfo[]; logs: string[]; openMs?: number; error?: string }) {
+      hydrate(result: EngineResult) {
         setState((current) => ({
           ...current,
           ready: true,
@@ -251,206 +185,199 @@ function useViewerState(title: string) {
   return { state, api };
 }
 
-const INFO_GROUPS: { label: string; keys: string[] }[] = [
-  { label: 'Model', keys: ['Entities', 'Meshes', 'Fragments', 'Spatial roots'] },
-  {
-    label: 'Performance',
-    keys: [
-      'IFC parsing time',
-      'IFC conversion time',
-      'First geometry frame',
-      'Render ready time',
-      'Fragment buffer encode time',
-      'Artifact save time',
-      'End-to-end time',
-    ],
-  },
-  { label: 'Output', keys: ['Artifact size'] },
-];
+// ---------------------------------------------------------------------------
+// Comparison table (the core side-by-side metric view)
+// ---------------------------------------------------------------------------
+interface CompareRow {
+  label: string;
+  ifc: string;
+  that: string;
+  /** When set, the lower value wins; the badge wording depends on the kind. */
+  kind?: 'time' | 'size';
+}
 
-function InfoTab({ state }: { state: ViewerState }) {
-  const [artifactUrls, setArtifactUrls] = useState<Record<string, string>>({});
+function ComparisonTable({ ifc, that }: { ifc: ViewerState; that: ViewerState }) {
+  const m = (state: ViewerState, label: string) => viewerLabelValue(state.metrics, label);
+  const open = (state: ViewerState) => (state.openMs !== undefined ? formatSeconds(state.openMs) : '—');
+  const schemaThat = m(that, 'Schema') === '—' ? m(ifc, 'Schema') : m(that, 'Schema');
 
-  useEffect(() => {
-    let active = true;
-    const createdUrls: string[] = [];
+  const rows: CompareRow[] = [
+    { label: 'Open time', ifc: open(ifc), that: open(that), kind: 'time' },
+    { label: 'End-to-end', ifc: m(ifc, 'End-to-end time'), that: m(that, 'End-to-end time'), kind: 'time' },
+    { label: 'Parse / convert', ifc: m(ifc, 'IFC parsing time'), that: m(that, 'IFC conversion time'), kind: 'time' },
+    { label: 'Render ready', ifc: m(ifc, 'Render ready time'), that: m(that, 'Render ready time'), kind: 'time' },
+    { label: 'Artifact size', ifc: m(ifc, 'Artifact size'), that: m(that, 'Artifact size'), kind: 'size' },
+    { label: 'Entities', ifc: m(ifc, 'Entities'), that: m(that, 'Entities') },
+    { label: 'Meshes / Fragments', ifc: m(ifc, 'Meshes'), that: m(that, 'Fragments') },
+    { label: 'Schema', ifc: m(ifc, 'Schema'), that: schemaThat },
+  ];
 
-    const loadArtifactUrls = async () => {
-      const entries = await Promise.all(
-        state.artifacts.map(async (artifact) => {
-          if (artifact.path === 'browser-memory') {
-            return [artifact.path, ''] as const;
-          }
-          const url = await getPersistedArtifactUrl(artifact.path);
-          if (url) {
-            createdUrls.push(url);
-          }
-          return [artifact.path, url ?? ''] as const;
-        }),
-      );
-
-      if (!active) {
-        createdUrls.forEach((url) => URL.revokeObjectURL(url));
-        return;
-      }
-
-      setArtifactUrls(
-        Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => Boolean(entry[1]))),
-      );
-    };
-
-    void loadArtifactUrls();
-
-    return () => {
-      active = false;
-      createdUrls.forEach((url) => URL.revokeObjectURL(url));
-      setArtifactUrls({});
-    };
-  }, [state.artifacts]);
-
-  const metricMap = new Map(state.metrics.map((m) => [m.label, m.value]));
-  const assignedKeys = new Set(INFO_GROUPS.flatMap((g) => g.keys));
-  const ungrouped = state.metrics.filter((m) => !assignedKeys.has(m.label) && m.label !== 'Schema');
-
-  if (state.metrics.length === 0) {
-    return <div className="empty-state">Stats will appear once parsing completes.</div>;
+  const hasData = ifc.metrics.length > 0 || that.metrics.length > 0;
+  if (!hasData) {
+    return <div className="cmp-empty">Open an IFC file — both engines are benchmarked one at a time, then compared here.</div>;
   }
 
   return (
-    <div className="info-tab">
-      {INFO_GROUPS.map((group) => {
-        const rows = group.keys.filter((k) => metricMap.has(k));
-        if (!rows.length) {
-          return null;
+    <div className="cmp-table" role="table" aria-label="Engine comparison">
+      <div className="cmp-row cmp-head" role="row">
+        <span className="cmp-label" role="columnheader">Metric</span>
+        <span className="cmp-cell cmp-engine ifclite" role="columnheader">IFClite</span>
+        <span className="cmp-cell cmp-engine thatopen" role="columnheader">ThatOpen</span>
+      </div>
+      {rows.map((row) => {
+        const a = row.kind ? parseMetricNumber(row.ifc) : null;
+        const b = row.kind ? parseMetricNumber(row.that) : null;
+        let ifcWins = false;
+        let thatWins = false;
+        let badge: string | null = null;
+        if (a !== null && b !== null && a !== b) {
+          const lo = Math.min(a, b);
+          const hi = Math.max(a, b);
+          ifcWins = a < b;
+          thatWins = b < a;
+          const ratio = lo > 0 ? hi / lo : 0;
+          if (ratio >= 1.05) {
+            badge = `×${ratio >= 10 ? ratio.toFixed(0) : ratio.toFixed(1)} ${row.kind === 'size' ? 'smaller' : 'faster'}`;
+          }
         }
-
         return (
-          <section className="info-group" key={group.label}>
-            <h4>{group.label}</h4>
-            {rows.map((k) => (
-              <div className="property-row" key={k}>
-                <span>{k}</span>
-                <strong>{metricMap.get(k)}</strong>
-              </div>
-            ))}
-          </section>
+          <div className="cmp-row" role="row" key={row.label}>
+            <span className="cmp-label" role="rowheader">{row.label}</span>
+            <span className={`cmp-cell${ifcWins ? ' win' : ''}`} role="cell">
+              <span className="cmp-value">{row.ifc}</span>
+              {ifcWins && badge && <span className="cmp-badge">{badge}</span>}
+            </span>
+            <span className={`cmp-cell${thatWins ? ' win' : ''}`} role="cell">
+              <span className="cmp-value">{row.that}</span>
+              {thatWins && badge && <span className="cmp-badge">{badge}</span>}
+            </span>
+          </div>
         );
       })}
-      {ungrouped.length > 0 && (
-        <section className="info-group" key="other">
-          <h4>Other</h4>
-          {ungrouped.map((m) => (
-            <div className="property-row" key={m.label}>
-              <span>{m.label}</span>
-              <strong>{m.value}</strong>
-            </div>
-          ))}
-        </section>
-      )}
-      {state.artifacts.length > 0 && (
-        <section className="info-group" key="artifacts">
-          <h4>Artifacts</h4>
-          {state.artifacts.map((a) => (
-            <div className="property-row" key={a.path}>
-              <span>
-                {artifactUrls[a.path] ? (
-                  <a
-                    className="artifact-link"
-                    href={artifactUrls[a.path]}
-                    target="_blank"
-                    rel="noreferrer"
-                    download={a.name}
-                  >
-                    {a.name}
-                  </a>
-                ) : (
-                  a.name
-                )}
-              </span>
-              <span>{(a.size / 1024).toFixed(1)} KB</span>
-            </div>
-          ))}
-        </section>
-      )}
-    </div>
-  );
-}
-
-function ProgressLogsTab({ state }: { state: ViewerState }) {
-  return (
-    <div className="progress-tab">
-      <section className="info-group">
-        <h4>Progress</h4>
-        <div className="property-row">
-          <span>Progress</span>
-          <strong>{Math.round(state.progress.percent)}%</strong>
-        </div>
-        <div className="property-row">
-          <span>Phase</span>
-          <strong>{state.progress.phase}</strong>
-        </div>
-        <div className="property-row">
-          <span>Total runtime</span>
-          <strong>{viewerLabelValue(state.metrics, 'End-to-end time')}</strong>
-        </div>
-      </section>
-      <section className="info-group">
-        <h4>Logs</h4>
-        <pre className="log-pre">{state.logs.join('\n')}</pre>
-      </section>
-    </div>
-  );
-}
-
-function BottomInfoPanel({
-  state,
-  activeTab,
-  setActiveTab,
-  onClose,
-}: {
-  state: ViewerState;
-  activeTab: 'info' | 'logs';
-  setActiveTab: (tab: 'info' | 'logs') => void;
-  onClose: () => void;
-}) {
-  const { panelRef, style, onHeaderMouseDown } = useDraggablePanelFromBottom(10, 10);
-
-  return (
-    <div ref={panelRef} className="floating-panel bottom-panel" style={style}>
-      <div className="floating-panel-header" onMouseDown={onHeaderMouseDown}>
-        <PanelTitle icon={<DetailsIcon />} text="Details" />
-        <button className="floating-close" type="button" onClick={onClose}>✕</button>
-      </div>
-      <div className="tab-bar">
-        <button
-          className={`tab-btn${activeTab === 'info' ? ' active' : ''}`}
-          onClick={() => setActiveTab('info')}
-          type="button"
-        >
-          Stats &amp; Info
-        </button>
-        <button
-          className={`tab-btn${activeTab === 'logs' ? ' active' : ''}`}
-          onClick={() => setActiveTab('logs')}
-          type="button"
-        >
-          Progress / Logs
-        </button>
-      </div>
-      <div className="tab-content">
-        {activeTab === 'info' ? <InfoTab state={state} /> : <ProgressLogsTab state={state} />}
-      </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Heads-up display: live model-open timer, frame rate, and heap memory
+// Artifact download links per engine
 // ---------------------------------------------------------------------------
-function ViewerHud({ state, stats }: { state: ViewerState; stats: RuntimeStats | null }) {
+function ArtifactLinks({ artifacts }: { artifacts: ArtifactInfo[] }) {
+  const [urls, setUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let active = true;
+    const created: string[] = [];
+    void (async () => {
+      const entries = await Promise.all(
+        artifacts.map(async (a) => {
+          if (a.path === 'browser-memory') return [a.path, ''] as const;
+          const url = await getPersistedArtifactUrl(a.path);
+          if (url) created.push(url);
+          return [a.path, url ?? ''] as const;
+        }),
+      );
+      if (!active) {
+        created.forEach((u) => URL.revokeObjectURL(u));
+        return;
+      }
+      setUrls(Object.fromEntries(entries.filter((e): e is readonly [string, string] => Boolean(e[1]))));
+    })();
+    return () => {
+      active = false;
+      created.forEach((u) => URL.revokeObjectURL(u));
+      setUrls({});
+    };
+  }, [artifacts]);
+
+  if (artifacts.length === 0) {
+    return <span className="artifact-empty">—</span>;
+  }
+
+  return (
+    <ul className="artifact-list">
+      {artifacts.map((a) => (
+        <li key={a.path}>
+          {urls[a.path] ? (
+            <a className="artifact-link" href={urls[a.path]} target="_blank" rel="noreferrer" download={a.name}>
+              {a.name}
+            </a>
+          ) : (
+            <span>{a.name}</span>
+          )}
+          <span className="artifact-size">{(a.size / 1024).toFixed(1)} KB</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bottom dock: comparison / logs
+// ---------------------------------------------------------------------------
+function Dock({ ifc, that }: { ifc: ViewerState; that: ViewerState }) {
+  const [tab, setTab] = useState<'comparison' | 'logs'>('comparison');
+
+  return (
+    <section className="dock">
+      <div className="dock-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'comparison'}
+          className={`dock-tab${tab === 'comparison' ? ' active' : ''}`}
+          onClick={() => setTab('comparison')}
+        >
+          Comparison
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'logs'}
+          className={`dock-tab${tab === 'logs' ? ' active' : ''}`}
+          onClick={() => setTab('logs')}
+        >
+          Logs
+        </button>
+      </div>
+
+      <div className="dock-body">
+        {tab === 'comparison' ? (
+          <>
+            <ComparisonTable ifc={ifc} that={that} />
+            <div className="artifacts-row">
+              <div className="artifact-col">
+                <h4 className="cmp-engine ifclite">IFClite artifacts</h4>
+                <ArtifactLinks artifacts={ifc.artifacts} />
+              </div>
+              <div className="artifact-col">
+                <h4 className="cmp-engine thatopen">ThatOpen artifacts</h4>
+                <ArtifactLinks artifacts={that.artifacts} />
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="logs-view">
+            <div className="logs-col">
+              <h4 className="cmp-engine ifclite">IFClite</h4>
+              <pre className="log-pre">{ifc.logs.join('\n')}</pre>
+            </div>
+            <div className="logs-col">
+              <h4 className="cmp-engine thatopen">ThatOpen</h4>
+              <pre className="log-pre">{that.logs.join('\n')}</pre>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Heads-up display: live model-open timer
+// ---------------------------------------------------------------------------
+function ViewerHud({ state }: { state: ViewerState }) {
   const [, forceTick] = useState(0);
 
-  // While a model is opening, repaint the live stopwatch each frame.
   const isTiming = state.busy && state.openStartedAt !== undefined && state.openMs === undefined;
   useEffect(() => {
     if (!isTiming) {
@@ -466,70 +393,48 @@ function ViewerHud({ state, stats }: { state: ViewerState; stats: RuntimeStats |
   }, [isTiming]);
 
   const openLabel = (() => {
-    if (state.openMs !== undefined) {
-      return formatSeconds(state.openMs);
-    }
-    if (isTiming && state.openStartedAt !== undefined) {
-      return formatSeconds(performance.now() - state.openStartedAt);
-    }
+    if (state.openMs !== undefined) return formatSeconds(state.openMs);
+    if (isTiming && state.openStartedAt !== undefined) return formatSeconds(performance.now() - state.openStartedAt);
     return '—';
   })();
 
-  const fpsLabel = stats && stats.fps > 0 ? `${Math.round(stats.fps)} fps` : '—';
-  const heapLabel = stats?.heapUsedBytes !== undefined ? formatBytes(stats.heapUsedBytes) : 'n/a';
-
   return (
-    <div className="viewer-hud" aria-label="Viewer runtime statistics">
-      <div className={`hud-metric${isTiming ? ' active' : ''}`}>
-        <span className="hud-label">Open time</span>
-        <span className="hud-value">{openLabel}</span>
-      </div>
-      <div className="hud-metric">
-        <span className="hud-label">Frame rate</span>
-        <span className="hud-value">{fpsLabel}</span>
-      </div>
-      <div className="hud-metric">
-        <span className="hud-label">Memory (heap)</span>
-        <span className="hud-value">{heapLabel}</span>
-      </div>
+    <div className="viewer-hud" aria-label="Open time">
+      <span className="hud-label">Open time</span>
+      <span className={`hud-value${isTiming ? ' active' : ''}`}>{openLabel}</span>
     </div>
   );
 }
 
 function ViewerPanel({
   title,
+  accent,
   state,
-  stats,
   canvasRef,
   hostRef,
   onReset,
   note,
 }: {
   title: string;
+  accent: 'ifclite' | 'thatopen';
   state: ViewerState;
-  stats: RuntimeStats | null;
   canvasRef?: React.RefObject<HTMLCanvasElement | null>;
   hostRef?: React.RefObject<HTMLDivElement | null>;
   onReset: () => void;
   note?: string;
 }) {
-  const [activeTab, setActiveTab] = useState<'info' | 'logs'>('info');
-  const [showBottomPanel, setShowBottomPanel] = useState(true);
+  const percent = Math.round(state.progress.percent);
+  const showProgress = state.busy && percent < 100;
 
   return (
     <section className="viewer-panel">
       <header className="viewer-header">
-        <div>
+        <div className="viewer-title">
+          <span className={`viewer-dot ${accent}`} aria-hidden="true" />
           <h2>{title}</h2>
+          {state.busy && <span className="viewer-phase">{state.progress.phase}</span>}
         </div>
         <div className="viewer-header-actions" role="toolbar" aria-label={`${title} viewer tools`}>
-          <IconToolbarButton
-            label={showBottomPanel ? 'Hide details panel' : 'Show details panel'}
-            onClick={() => setShowBottomPanel((v) => !v)}
-            pressed={showBottomPanel}
-          >
-            <DetailsIcon />
-          </IconToolbarButton>
           <IconToolbarButton label="Reset view" onClick={onReset}>
             <HomeIcon />
           </IconToolbarButton>
@@ -540,26 +445,16 @@ function ViewerPanel({
         <div className="canvas-shell">
           {canvasRef ? <canvas ref={canvasRef} className="viewer-canvas" /> : <div ref={hostRef} className="viewer-host" />}
           {note && <div className="viewport-note">{note}</div>}
-          <ViewerHud state={state} stats={stats} />
-          {showBottomPanel && (
-            <BottomInfoPanel
-              state={state}
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
-              onClose={() => setShowBottomPanel(false)}
-            />
+          <ViewerHud state={state} />
+          {showProgress && (
+            <div className="viewer-progress" aria-hidden="true">
+              <div className={`viewer-progress-bar ${accent}`} style={{ width: `${percent}%` }} />
+            </div>
           )}
         </div>
       </div>
     </section>
   );
-}
-
-function resultToStats(result: EngineResult | null): RuntimeStats | null {
-  if (!result) {
-    return null;
-  }
-  return { fps: result.fps ?? 0, frameTimeMs: 0, heapUsedBytes: result.heapUsedBytes };
 }
 
 export default function App() {
@@ -570,17 +465,26 @@ export default function App() {
 
   // The benchmark phase is fixed for the lifetime of a page load; transitions
   // happen via setBenchPhase(...) + a reload so each engine is measured fresh.
-  const [phase] = useState<BenchPhase>(getBenchPhase);
+  // A genuine fresh visit (navigation type "navigate", e.g. new tab / typed URL)
+  // must not resume a stale benchmark from a previous session, so it is reset to
+  // idle. Programmatic continuation between engines uses reload(), which reports
+  // navigation type "reload" and is therefore preserved.
+  const [phase] = useState<BenchPhase>(() => {
+    const raw = getBenchPhase();
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    if (nav?.type === 'navigate' && raw !== 'idle') {
+      clearBenchSession();
+      return 'idle';
+    }
+    return raw;
+  });
 
   const selectedFileName = getBenchFileName() ?? 'No IFC file selected';
   const benchSize = getBenchFileSize();
-  const selectedFileSize = benchSize !== null ? formatBytes(benchSize) : '—';
+  const selectedFileSize = benchSize !== null ? formatBytes(benchSize) : null;
 
   const ifcLite = useViewerState('IFClite');
   const thatOpen = useViewerState('ThatOpen');
-
-  const [ifcLiteStats, setIfcLiteStats] = useState<RuntimeStats | null>(null);
-  const [thatOpenStats, setThatOpenStats] = useState<RuntimeStats | null>(null);
 
   // IFClite is measured on its own page, so in later phases its panel is
   // hydrated from the stored result and its canvas stays empty.
@@ -590,7 +494,7 @@ export default function App() {
   const schemaFromIfcLite = viewerLabelValue(ifcLite.state.metrics, 'Schema');
   const schemaFromThatOpen = viewerLabelValue(thatOpen.state.metrics, 'Schema');
   const selectedFileSchema =
-    schemaFromIfcLite !== '—' ? schemaFromIfcLite : schemaFromThatOpen !== '—' ? schemaFromThatOpen : '—';
+    schemaFromIfcLite !== '—' ? schemaFromIfcLite : schemaFromThatOpen !== '—' ? schemaFromThatOpen : null;
 
   useEffect(() => {
     const canvas = ifcLiteCanvasRef.current;
@@ -651,8 +555,7 @@ export default function App() {
       }
 
       const openMs = performance.now() - startedAt;
-      const snap = adapter.getStats?.();
-      return { metrics, artifacts, logs, openMs, error, fps: snap?.fps, heapUsedBytes: snap?.heapUsedBytes };
+      return { metrics, artifacts, logs, openMs, error };
     };
 
     const orchestrate = async () => {
@@ -696,43 +599,34 @@ export default function App() {
         return;
       }
 
-      // phase === 'thatopen' | 'done': IFClite panel is restored from its stored
-      // result; ThatOpen is the live viewer.
+      // Restore the IFClite panel from its stored (previous-page) result.
       if (ifcLiteStored) {
         ifcLite.api.hydrate(ifcLiteStored);
       }
+
+      // phase === 'done' (a reload after the benchmark already finished): just
+      // restore both metric sets. Do NOT re-load ThatOpen's heavy 3D model — that
+      // would make the previous model load itself again on every refresh.
+      if (phase === 'done') {
+        const stored = loadEngineResult('thatopen');
+        if (stored) {
+          thatOpen.api.hydrate(stored);
+        }
+        return;
+      }
+
+      // phase === 'thatopen': measure ThatOpen live; its 3D view stays on screen.
       thatOpenAdapter = createThatOpenAdapter(host);
       thatOpenAdapterRef.current = thatOpenAdapter;
       await thatOpenAdapter.init();
       if (disposed) return;
       thatOpen.api.markReady();
 
-      if (phase === 'thatopen') {
-        const result = await measure(thatOpenAdapter, thatOpen.api, 'ThatOpen', file);
-        if (disposed) return;
-        saveEngineResult('thatopen', result);
-        setBenchPhase('done');
-        // Stay on this page: ThatOpen's 3D view is live and both metric sets are shown.
-        return;
-      }
-
-      // phase === 'done' (manual reload after completion): restore metrics and
-      // re-load ThatOpen purely for viewing, without overwriting stored metrics.
-      const stored = loadEngineResult('thatopen');
-      if (stored) {
-        thatOpen.api.hydrate(stored);
-      }
-      await thatOpenAdapter.load({
-        file: new File([file.buffer], file.name),
-        buffer: file.buffer,
-        onProgress: () => {},
-        onLog: () => {},
-        onMetrics: () => {},
-        onArtifacts: () => {},
-        onTree: () => {},
-        onEntityIndex: () => {},
-        onSelected: (entity) => !disposed && thatOpen.api.setSelected(entity),
-      });
+      const result = await measure(thatOpenAdapter, thatOpen.api, 'ThatOpen', file);
+      if (disposed) return;
+      saveEngineResult('thatopen', result);
+      setBenchPhase('done');
+      // Stay on this page: ThatOpen's 3D view is live and both metric sets are shown.
     };
 
     void orchestrate();
@@ -744,15 +638,6 @@ export default function App() {
     };
   }, [phase, ifcLite.api, thatOpen.api, ifcLiteStored]);
 
-  // Poll live frame-rate / memory statistics from both adapters.
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      setIfcLiteStats(ifcLiteAdapterRef.current?.getStats?.() ?? null);
-      setThatOpenStats(thatOpenAdapterRef.current?.getStats?.() ?? null);
-    }, 250);
-    return () => window.clearInterval(interval);
-  }, []);
-
   const onBrowse = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.currentTarget.value = '';
@@ -760,15 +645,29 @@ export default function App() {
       return;
     }
     // Persist the file + arm the benchmark, then reload so IFClite runs on a
-    // clean page (fresh V8 heap → honest per-engine timing and memory).
+    // clean page (fresh V8 heap → honest per-engine timing).
     await startBench(file);
     window.location.reload();
   };
 
   const ifcLiteNote = ifcLiteMeasuredOnly
-    ? 'Measured in isolation on a separate page — see metrics below'
+    ? 'Measured in isolation on a separate page — see comparison below'
     : undefined;
-  const thatOpenNote = phase === 'ifclite' ? 'Queued — runs after the page reloads' : undefined;
+  const thatOpenNote =
+    phase === 'ifclite'
+      ? 'Queued — runs after the page reloads'
+      : phase === 'done'
+      ? 'Benchmark complete — open a file to run again'
+      : undefined;
+
+  const statusLabel =
+    phase === 'ifclite'
+      ? 'Measuring IFClite…'
+      : phase === 'thatopen'
+      ? 'Measuring ThatOpen…'
+      : phase === 'done'
+      ? 'Benchmark complete'
+      : null;
 
   return (
     <main className="app-shell">
@@ -778,40 +677,33 @@ export default function App() {
         </label>
         <input id="ifc-file-input" type="file" accept=".ifc" onChange={onBrowse} hidden />
         <div className="file-pill">
-          <span>Selected file:</span>
-          <strong>{selectedFileName}</strong>
-          <span className="file-meta file-meta-size">{selectedFileSize}</span>
-          <span className="file-meta">Schema: {selectedFileSchema}</span>
-          {phase !== 'idle' && (
-            <span className="file-meta">
-              {phase === 'ifclite'
-                ? 'Measuring IFClite…'
-                : phase === 'thatopen'
-                ? 'Measuring ThatOpen…'
-                : 'Sequential isolated benchmark'}
-            </span>
-          )}
+          <span className="file-pill-name" title={selectedFileName}>{selectedFileName}</span>
+          {selectedFileSize && <span className="file-chip">{selectedFileSize}</span>}
+          {selectedFileSchema && <span className="file-chip">{selectedFileSchema}</span>}
+          {statusLabel && <span className={`file-status${phase === 'done' ? ' done' : ''}`}>{statusLabel}</span>}
         </div>
       </header>
 
       <section className="comparison-grid">
         <ViewerPanel
           title="IFClite"
+          accent="ifclite"
           state={ifcLite.state}
-          stats={ifcLiteMeasuredOnly ? resultToStats(ifcLiteStored) : ifcLiteStats}
           canvasRef={ifcLiteCanvasRef}
           onReset={() => void ifcLiteAdapterRef.current?.reset()}
           note={ifcLiteNote}
         />
         <ViewerPanel
           title="ThatOpen"
+          accent="thatopen"
           state={thatOpen.state}
-          stats={thatOpenStats}
           hostRef={thatOpenHostRef}
           onReset={() => void thatOpenAdapterRef.current?.reset()}
           note={thatOpenNote}
         />
       </section>
+
+      <Dock ifc={ifcLite.state} that={thatOpen.state} />
     </main>
   );
 }

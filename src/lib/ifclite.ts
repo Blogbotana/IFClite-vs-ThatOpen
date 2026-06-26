@@ -4,8 +4,7 @@ import { buildEntitySummary } from './ifc-tree';
 import { GeometryProcessor, type MeshData } from '@ifc-lite/geometry';
 import { ParquetExporter } from '@ifc-lite/export';
 import { Renderer, type RenderOptions } from '@ifc-lite/renderer';
-import type { EntitySummary, RuntimeStats, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
-import { FrameRateTracker, readHeapStats } from './runtime-stats';
+import type { EntitySummary, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
 import { persistArtifacts, textBytes } from './file-system';
 
 function formatBytes(size: number): string {
@@ -201,7 +200,6 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
   let onSelectedCallback: ViewerLoadContext['onSelected'] | null = null;
   let selectedExpressId: number | null = null;
   let lastInteractionAt = 0;
-  const frameRate = new FrameRateTracker();
 
   const INTERACTION_DECAY_MS = 140;
   const MAX_PIXEL_RATIO = 2;
@@ -353,7 +351,6 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
       visualEnhancement: BASE_VISUAL_ENHANCEMENT,
       selectedId: selectedExpressId,
     });
-    frameRate.tick(now);
     animationFrame = window.requestAnimationFrame(renderLoop);
   };
 
@@ -399,13 +396,6 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
         renderer.getCamera().reset();
       }
       renderer.requestRender();
-    },
-    getStats(): RuntimeStats {
-      return {
-        fps: frameRate.fps,
-        frameTimeMs: frameRate.frameTimeMs,
-        ...readHeapStats(),
-      };
     },
     async load(context: ViewerLoadContext) {
       clearCurrentModel();

@@ -18,8 +18,6 @@ export interface EngineResult {
   logs: string[];
   openMs?: number;
   error?: string;
-  fps?: number;
-  heapUsedBytes?: number;
 }
 
 const PHASE_KEY = 'bench.phase';

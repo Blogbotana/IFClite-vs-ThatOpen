@@ -10,12 +10,11 @@ A side-by-side runtime comparison of two fully client-side IFC pipelines, built 
 
 ## Features
 
-- Single `.ifc` file selection runs an **isolated benchmark with a page reload between engines**: IFClite is measured on a fresh page, the page reloads, then ThatOpen is measured on a fresh page. Each engine starts on a clean V8 heap, so timings, FPS and `performance.memory` are honest per-engine figures (IFClite does most of its work on the main thread, so a shared/concurrent run would skew them). The file is stashed in IndexedDB and the run phase + results in `sessionStorage` to survive the reload. Final screen shows ThatOpen's live 3D plus both engines' isolated metrics (IFClite's panel is hydrated from its stored result).
-- Live progress bars, timing metrics, and rolling logs per viewer
-- Per-viewer runtime HUD: live **model-open timer**, **frame rate (FPS)**, and **JS heap memory**
+- Single `.ifc` file selection runs an **isolated benchmark with a page reload between engines**: IFClite is measured on a fresh page, the page reloads, then ThatOpen is measured on a fresh page. Each engine starts on a clean V8 heap, so the open-time timing is an honest per-engine figure (IFClite does most of its work on the main thread, so a shared/concurrent run would skew it). The file is stashed in IndexedDB and the run phase + results in `sessionStorage` to survive the reload. Final screen shows ThatOpen's live 3D plus both engines' isolated metrics (IFClite's panel is hydrated from its stored result).
+- Docked **comparison panel**: a side-by-side IFClite-vs-ThatOpen metrics table with per-row winner highlighting and speed/size ratios, plus a two-column logs view and artifact download links
+- Per-viewer HUD with a live **model-open timer**
 - Click an element in either viewer to **orbit the camera around the selected object**
 - IFClite selected element is highlighted directly in the WebGPU renderer
-- Floating, draggable details panel (stats / logs) per viewer
 - Artifacts (`.bos`, JSON, `.frag`) persisted to OPFS when available
 - Reset view button per viewer
 
@@ -90,4 +89,3 @@ public/
 - IFClite artifacts: `metrics.json` and `model.bos` (parquet/BOS geometry export, best-effort). CSV export was dropped when `@ifc-lite/export` removed `CSVExporter` in v2.
 - ThatOpen artifacts: `<model>.frag` binary fragment buffer and `metrics.json`.
 - Orbit-around-selection: IFClite raycasts the clicked surface point and calls `camera.setOrbitCenter(...)`; ThatOpen reads the selected element's bounding box (`model.getBoxes`) and calls `controls.setOrbitPoint(...)`.
-- The runtime HUD reads frame rate from each adapter's render loop (`getStats()`) and JS heap usage from the non-standard, Chromium-only `performance.memory` (a page-level figure shared by both viewers).

@@ -2,9 +2,8 @@ import * as OBC from '@thatopen/components';
 import * as OBF from '@thatopen/components-front';
 import * as WEBIFC from 'web-ifc';
 import { Box3, Vector3 } from 'three';
-import type { RuntimeStats, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
+import type { ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
 import { persistArtifacts, textBytes } from './file-system';
-import { FrameRateTracker, readHeapStats } from './runtime-stats';
 
 const THATOPEN_LOAD_TIMEOUT_MS = 120_000;
 let webIfcInitPatched = false;
@@ -83,7 +82,6 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
   let currentModelId: string | null = null;
   let activeLoadModelId: string | null = null;
   let onSelectedCallback: ViewerLoadContext['onSelected'] | null = null;
-  const frameRate = new FrameRateTracker();
 
   // Re-aim the camera's orbit pivot at the bounding-box centre of the selected
   // element so dragging rotates the view around that object.
@@ -140,8 +138,6 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
       // it is same-origin and never blocked by COEP or network issues.
       fragments.init('/thatopen-worker.mjs');
       controls.addEventListener('update', () => fragments.core.update());
-      // Count rendered frames for the live FPS readout.
-      world.renderer?.onAfterUpdate.add(() => frameRate.tick());
       fragments.list.onItemSet.add(({ value: model }) => {
         currentModel = model;
         try {
@@ -292,13 +288,6 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
     },
     select() {
       // Selection highlight is handled by ThatOpen's Highlighter interaction pipeline.
-    },
-    getStats(): RuntimeStats {
-      return {
-        fps: frameRate.fps,
-        frameTimeMs: frameRate.frameTimeMs,
-        ...readHeapStats(),
-      };
     },
   };
 }
