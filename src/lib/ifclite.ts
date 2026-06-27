@@ -186,13 +186,25 @@ function resolveTreeSelectionExpressId(
   return pickedExpressId;
 }
 
-export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
+// Minimal surface of @ifc-lite/geometry's GeometryProcessor the adapter needs.
+// Declared structurally so a different geometry-engine version (e.g. the old
+// Manifold-kernel build, aliased as @ifc-lite/geometry-manifold) can be injected.
+export interface IfcLiteGeometryEngine {
+  init(): Promise<void>;
+  processStreaming(buffer: Uint8Array): AsyncIterable<unknown>;
+}
+
+export function createIfcLiteAdapter(
+  canvas: HTMLCanvasElement,
+  geometryEngine?: IfcLiteGeometryEngine,
+): ViewerAdapter {
   const renderer = new Renderer(canvas);
   // Keep all geometry on the flat MeshData stream consumed by renderer.addMeshes.
   // With instancing enabled (the @ifc-lite/geometry v2 default), repeated
   // elements are emitted as packed `instancedShards` instead of flat meshes;
   // this app does not decode/upload those shards, so they would be invisible.
-  const geometry = new GeometryProcessor({ enableInstancing: false });
+  // The injected engine (old Manifold build) predates instancing — flat already.
+  const geometry: IfcLiteGeometryEngine = geometryEngine ?? new GeometryProcessor({ enableInstancing: false });
   let animationFrame = 0;
   let latestStore: IfcDataStore | null = null;
   let latestEntityIndex: Record<number, EntitySummary> = {};
@@ -414,7 +426,13 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
 
       let meshCount = 0;
       let firstBatchAt: number | null = null;
-      for await (const event of geometry.processStreaming(fileBytes)) {
+      for await (const rawEvent of geometry.processStreaming(fileBytes)) {
+        const event = rawEvent as {
+          type: string;
+          meshes: MeshData[];
+          totalSoFar?: number;
+          totalMeshes?: number;
+        };
         switch (event.type) {
           case 'start':
             context.onProgress({ phase: 'Preparing geometry stream', percent: 10 });
@@ -434,7 +452,7 @@ export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
             break;
           case 'complete':
             renderer.fitToView();
-            context.onLog(`IFClite geometry complete: ${event.totalMeshes.toLocaleString()} meshes`);
+            context.onLog(`IFClite geometry complete: ${(event.totalMeshes ?? meshCount).toLocaleString()} meshes`);
             break;
         }
       }

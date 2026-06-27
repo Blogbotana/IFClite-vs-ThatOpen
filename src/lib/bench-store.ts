@@ -1,16 +1,20 @@
 // Cross-reload benchmark state.
 //
-// To measure each engine in isolation, the app reloads the page between runs so
-// each engine starts on a fresh V8 / clean JS heap (this also makes
-// `performance.memory` a genuine per-engine figure). That requires surviving a
-// full reload, so:
+// Each engine is measured in isolation: the page reloads between engines so each
+// starts on a fresh V8 / clean JS heap and never competes with the others for the
+// main thread. Surviving a reload requires persistence, so:
 //   - the selected IFC bytes are stored in IndexedDB (too large for sessionStorage),
 //   - the run phase + each engine's captured result live in sessionStorage
 //     (small JSON, scoped to the tab, cleared when the tab closes).
 
 import type { ArtifactInfo, ViewerMetric } from '../types';
 
-export type BenchPhase = 'idle' | 'ifclite' | 'thatopen' | 'done';
+/** Engines compared, in the order they are benchmarked (one per page load). */
+export type EngineId = 'ifclite-new' | 'ifclite-old' | 'thatopen';
+export const ENGINE_ORDER: EngineId[] = ['ifclite-new', 'ifclite-old', 'thatopen'];
+
+/** Phase = idle (no run), an engine id (that engine is being measured), or done. */
+export type BenchPhase = 'idle' | EngineId | 'done';
 
 export interface EngineResult {
   metrics: ViewerMetric[];
@@ -23,7 +27,7 @@ export interface EngineResult {
 const PHASE_KEY = 'bench.phase';
 const NAME_KEY = 'bench.fileName';
 const SIZE_KEY = 'bench.fileSize';
-const RESULT_KEY = (engine: 'ifclite' | 'thatopen') => `bench.result.${engine}`;
+const RESULT_KEY = (engine: EngineId) => `bench.result.${engine}`;
 
 const DB_NAME = 'ifc-compare-bench';
 const STORE_NAME = 'files';
@@ -40,6 +44,12 @@ export function setBenchPhase(phase: BenchPhase): void {
   sessionStorage.setItem(PHASE_KEY, phase);
 }
 
+/** The engine that runs after `phase`, or null if `phase` is the last engine. */
+export function nextEngine(phase: EngineId): EngineId | null {
+  const index = ENGINE_ORDER.indexOf(phase);
+  return index >= 0 && index < ENGINE_ORDER.length - 1 ? ENGINE_ORDER[index + 1] : null;
+}
+
 export function getBenchFileName(): string | null {
   return sessionStorage.getItem(NAME_KEY);
 }
@@ -49,11 +59,11 @@ export function getBenchFileSize(): number | null {
   return raw ? Number(raw) : null;
 }
 
-export function saveEngineResult(engine: 'ifclite' | 'thatopen', result: EngineResult): void {
+export function saveEngineResult(engine: EngineId, result: EngineResult): void {
   sessionStorage.setItem(RESULT_KEY(engine), JSON.stringify(result));
 }
 
-export function loadEngineResult(engine: 'ifclite' | 'thatopen'): EngineResult | null {
+export function loadEngineResult(engine: EngineId): EngineResult | null {
   const raw = sessionStorage.getItem(RESULT_KEY(engine));
   if (!raw) {
     return null;
@@ -69,8 +79,7 @@ export function clearBenchSession(): void {
   sessionStorage.removeItem(PHASE_KEY);
   sessionStorage.removeItem(NAME_KEY);
   sessionStorage.removeItem(SIZE_KEY);
-  sessionStorage.removeItem(RESULT_KEY('ifclite'));
-  sessionStorage.removeItem(RESULT_KEY('thatopen'));
+  ENGINE_ORDER.forEach((id) => sessionStorage.removeItem(RESULT_KEY(id)));
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +96,7 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-/** Persist the picked file and arm the benchmark (phase = ifclite). */
+/** Persist the picked file and arm the benchmark at the first engine. */
 export async function startBench(file: File): Promise<void> {
   const buffer = await file.arrayBuffer();
   const db = await openDb();
@@ -104,7 +113,7 @@ export async function startBench(file: File): Promise<void> {
   clearBenchSession();
   sessionStorage.setItem(NAME_KEY, file.name);
   sessionStorage.setItem(SIZE_KEY, String(file.size));
-  setBenchPhase('ifclite');
+  setBenchPhase(ENGINE_ORDER[0]);
 }
 
 export async function loadBenchFile(): Promise<{ name: string; buffer: ArrayBuffer } | null> {
