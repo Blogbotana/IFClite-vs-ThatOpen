@@ -4,16 +4,21 @@ import {
   type BenchPhase,
   type EngineId,
   type EngineResult,
-  ENGINE_ORDER,
+  type OrderKey,
+  ALL_ENGINES,
+  ORDERS,
   clearBenchSession,
   getBenchPhase,
   getBenchFileName,
   getBenchFileSize,
+  getOrderPref,
+  getRunOrder,
   loadBenchFile,
   loadEngineResult,
   nextEngine,
   saveEngineResult,
   setBenchPhase,
+  setOrderPref,
   startBench,
 } from './lib/bench-store';
 import type {
@@ -35,11 +40,11 @@ interface EngineDef {
   kind: 'canvas' | 'host';
 }
 
-const ENGINES: EngineDef[] = [
-  { id: 'ifclite-new', title: 'ifc-lite', subtitle: 'exact 2.12', accent: 'ifclite', kind: 'canvas' },
-  { id: 'ifclite-old', title: 'ifc-lite', subtitle: 'Manifold 2.4.0', accent: 'manifold', kind: 'canvas' },
-  { id: 'thatopen', title: 'ThatOpen', subtitle: 'web-ifc', accent: 'thatopen', kind: 'host' },
-];
+const ENGINE_DEFS: Record<EngineId, EngineDef> = {
+  'ifclite-new': { id: 'ifclite-new', title: 'ifc-lite', subtitle: 'exact 2.12', accent: 'ifclite', kind: 'canvas' },
+  'ifclite-old': { id: 'ifclite-old', title: 'ifc-lite', subtitle: 'Manifold 2.4.0', accent: 'manifold', kind: 'canvas' },
+  thatopen: { id: 'thatopen', title: 'ThatOpen', subtitle: 'web-ifc', accent: 'thatopen', kind: 'host' },
+};
 
 async function createAdapter(id: EngineId, el: HTMLElement): Promise<ViewerAdapter> {
   if (id === 'ifclite-new') {
@@ -216,7 +221,7 @@ function useViewerState(title: string) {
 type ViewerApi = ReturnType<typeof useViewerState>['api'];
 
 // ---------------------------------------------------------------------------
-// Comparison table (N engines side by side)
+// Comparison table (N engines side by side, in run order)
 // ---------------------------------------------------------------------------
 interface CompareEngine {
   def: EngineDef;
@@ -546,17 +551,24 @@ export default function App() {
     return raw;
   });
 
+  const [orderPref, setOrderPrefState] = useState<OrderKey>(getOrderPref);
+
   const selectedFileName = getBenchFileName() ?? 'No IFC file selected';
   const benchSize = getBenchFileSize();
   const selectedFileSize = benchSize !== null ? formatBytes(benchSize) : null;
 
   const fileSchema = (() => {
-    for (const id of ENGINE_ORDER) {
+    for (const id of ALL_ENGINES) {
       const s = viewerLabelValue(states[id].state.metrics, 'Schema');
       if (s !== '—') return s;
     }
     return null;
   })();
+
+  // Display / run order: while idle follow the live preference, otherwise the
+  // snapshot taken for the active run.
+  const order: EngineId[] = phase === 'idle' ? ORDERS[orderPref] : getRunOrder();
+  const measuring = phase !== 'idle' && phase !== 'done';
 
   useEffect(() => {
     let disposed = false;
@@ -607,27 +619,26 @@ export default function App() {
     };
 
     const orchestrate = async () => {
-      // Idle / done: no live run. Restore any stored results so the comparison
-      // and logs are populated without re-loading heavy models.
       if (phase === 'idle') {
         return;
       }
       if (phase === 'done') {
-        for (const id of ENGINE_ORDER) {
+        for (const id of ALL_ENGINES) {
           const stored = loadEngineResult(id);
           if (stored) states[id].api.hydrate(stored);
         }
         return;
       }
 
-      // Restore engines already measured on previous pages.
-      const currentIndex = ENGINE_ORDER.indexOf(phase);
+      // Restore engines already measured on previous pages (those before this one).
+      const runOrder = getRunOrder();
+      const currentIndex = runOrder.indexOf(phase);
       for (let i = 0; i < currentIndex; i += 1) {
-        const stored = loadEngineResult(ENGINE_ORDER[i]);
-        if (stored) states[ENGINE_ORDER[i]].api.hydrate(stored);
+        const stored = loadEngineResult(runOrder[i]);
+        if (stored) states[runOrder[i]].api.hydrate(stored);
       }
 
-      const def = ENGINES.find((e) => e.id === phase);
+      const def = ENGINE_DEFS[phase];
       const el = elRefs[phase].current;
       if (!def || !el) return;
 
@@ -647,10 +658,8 @@ export default function App() {
       const next = nextEngine(phase);
       if (next) {
         setBenchPhase(next);
-        // Paint the finished state briefly, then reload into the next engine.
         window.setTimeout(() => window.location.reload(), 700);
       } else {
-        // Last engine: stay on the page so its 3D view remains live.
         setBenchPhase('done');
       }
     };
@@ -670,22 +679,25 @@ export default function App() {
     if (!file) {
       return;
     }
-    // Persist the file + arm the benchmark, then reload so the first engine runs
-    // on a clean page (fresh V8 heap → honest per-engine timing).
     await startBench(file);
     window.location.reload();
   };
 
-  const currentIndex = ENGINE_ORDER.indexOf(phase as EngineId);
+  const selectOrder = (key: OrderKey) => {
+    setOrderPref(key);
+    setOrderPrefState(key);
+  };
+
+  const currentIndex = order.indexOf(phase as EngineId);
   const noteFor = (index: number): string | undefined => {
     if (phase === 'idle') return undefined;
     if (phase === 'done') return 'Measured in isolation — see comparison below';
     if (index < currentIndex) return 'Measured in isolation — see comparison below';
     if (index > currentIndex) return 'Queued — runs after the page reloads';
-    return undefined; // current engine, live
+    return undefined;
   };
 
-  const measuringDef = ENGINES.find((e) => e.id === phase);
+  const measuringDef = measuring ? ENGINE_DEFS[phase as EngineId] : null;
   const statusLabel =
     phase === 'done'
       ? 'Benchmark complete'
@@ -693,8 +705,9 @@ export default function App() {
       ? `Measuring ${measuringDef.title} ${measuringDef.subtitle}…`
       : null;
 
-  const compareEngines: CompareEngine[] = ENGINES.map((def) => ({ def, state: states[def.id].state }));
-  const gridStyle = { ['--cols' as string]: String(ENGINES.length) } as React.CSSProperties;
+  const orderedDefs = order.map((id) => ENGINE_DEFS[id]);
+  const compareEngines: CompareEngine[] = orderedDefs.map((def) => ({ def, state: states[def.id].state }));
+  const gridStyle = { ['--cols' as string]: String(orderedDefs.length) } as React.CSSProperties;
 
   return (
     <main className="app-shell">
@@ -703,6 +716,22 @@ export default function App() {
           Browse
         </label>
         <input id="ifc-file-input" type="file" accept=".ifc" onChange={onBrowse} hidden />
+
+        <div className="order-toggle" role="group" aria-label="Benchmark order" title="Which engine runs first">
+          {(['ifclite-first', 'thatopen-first'] as OrderKey[]).map((key) => (
+            <button
+              key={key}
+              type="button"
+              className={`order-btn${orderPref === key ? ' active' : ''}`}
+              aria-pressed={orderPref === key}
+              disabled={measuring}
+              onClick={() => selectOrder(key)}
+            >
+              {key === 'ifclite-first' ? 'ifc-lite first' : 'ThatOpen first'}
+            </button>
+          ))}
+        </div>
+
         <div className="file-pill">
           <span className="file-pill-name" title={selectedFileName}>{selectedFileName}</span>
           {selectedFileSize && <span className="file-chip">{selectedFileSize}</span>}
@@ -712,7 +741,7 @@ export default function App() {
       </header>
 
       <section className="comparison-grid" style={gridStyle}>
-        {ENGINES.map((def, index) => (
+        {orderedDefs.map((def, index) => (
           <ViewerPanel
             key={def.id}
             def={def}

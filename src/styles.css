@@ -138,6 +138,44 @@ input {
   gap: 12px;
 }
 
+/* order toggle (which engine runs first) */
+.order-toggle {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.order-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.order-btn:hover:not(:disabled):not(.active) {
+  color: var(--text);
+}
+
+.order-btn.active {
+  background: var(--text);
+  color: #10202a;
+}
+
+.order-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .viewer-panel {
   display: flex;
   flex-direction: column;

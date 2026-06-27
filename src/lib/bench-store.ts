@@ -9,9 +9,16 @@
 
 import type { ArtifactInfo, ViewerMetric } from '../types';
 
-/** Engines compared, in the order they are benchmarked (one per page load). */
+/** The engines compared (every id, regardless of run order). */
 export type EngineId = 'ifclite-new' | 'ifclite-old' | 'thatopen';
-export const ENGINE_ORDER: EngineId[] = ['ifclite-new', 'ifclite-old', 'thatopen'];
+export const ALL_ENGINES: EngineId[] = ['ifclite-new', 'ifclite-old', 'thatopen'];
+
+/** Selectable benchmark order (which engine runs / is shown first). */
+export type OrderKey = 'ifclite-first' | 'thatopen-first';
+export const ORDERS: Record<OrderKey, EngineId[]> = {
+  'ifclite-first': ['ifclite-new', 'ifclite-old', 'thatopen'],
+  'thatopen-first': ['thatopen', 'ifclite-new', 'ifclite-old'],
+};
 
 /** Phase = idle (no run), an engine id (that engine is being measured), or done. */
 export type BenchPhase = 'idle' | EngineId | 'done';
@@ -27,11 +34,31 @@ export interface EngineResult {
 const PHASE_KEY = 'bench.phase';
 const NAME_KEY = 'bench.fileName';
 const SIZE_KEY = 'bench.fileSize';
+const ORDER_RUN_KEY = 'bench.order'; // sessionStorage: order snapshot for the active run
+const ORDER_PREF_KEY = 'bench.orderPref'; // localStorage: persistent order preference
 const RESULT_KEY = (engine: EngineId) => `bench.result.${engine}`;
 
 const DB_NAME = 'ifc-compare-bench';
 const STORE_NAME = 'files';
 const FILE_KEY = 'current';
+
+// ---------------------------------------------------------------------------
+// Run order: preference (localStorage) + active-run snapshot (sessionStorage)
+// ---------------------------------------------------------------------------
+export function getOrderPref(): OrderKey {
+  const value = localStorage.getItem(ORDER_PREF_KEY) as OrderKey | null;
+  return value && value in ORDERS ? value : 'ifclite-first';
+}
+
+export function setOrderPref(key: OrderKey): void {
+  localStorage.setItem(ORDER_PREF_KEY, key);
+}
+
+/** The engine order for the current run (snapshot), falling back to preference. */
+export function getRunOrder(): EngineId[] {
+  const key = (sessionStorage.getItem(ORDER_RUN_KEY) as OrderKey | null) ?? getOrderPref();
+  return ORDERS[key] ?? ORDERS['ifclite-first'];
+}
 
 // ---------------------------------------------------------------------------
 // sessionStorage: phase, file name, per-engine results
@@ -46,8 +73,9 @@ export function setBenchPhase(phase: BenchPhase): void {
 
 /** The engine that runs after `phase`, or null if `phase` is the last engine. */
 export function nextEngine(phase: EngineId): EngineId | null {
-  const index = ENGINE_ORDER.indexOf(phase);
-  return index >= 0 && index < ENGINE_ORDER.length - 1 ? ENGINE_ORDER[index + 1] : null;
+  const order = getRunOrder();
+  const index = order.indexOf(phase);
+  return index >= 0 && index < order.length - 1 ? order[index + 1] : null;
 }
 
 export function getBenchFileName(): string | null {
@@ -79,7 +107,8 @@ export function clearBenchSession(): void {
   sessionStorage.removeItem(PHASE_KEY);
   sessionStorage.removeItem(NAME_KEY);
   sessionStorage.removeItem(SIZE_KEY);
-  ENGINE_ORDER.forEach((id) => sessionStorage.removeItem(RESULT_KEY(id)));
+  sessionStorage.removeItem(ORDER_RUN_KEY);
+  ALL_ENGINES.forEach((id) => sessionStorage.removeItem(RESULT_KEY(id)));
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +142,8 @@ export async function startBench(file: File): Promise<void> {
   clearBenchSession();
   sessionStorage.setItem(NAME_KEY, file.name);
   sessionStorage.setItem(SIZE_KEY, String(file.size));
-  setBenchPhase(ENGINE_ORDER[0]);
+  sessionStorage.setItem(ORDER_RUN_KEY, getOrderPref());
+  setBenchPhase(getRunOrder()[0]);
 }
 
 export async function loadBenchFile(): Promise<{ name: string; buffer: ArrayBuffer } | null> {
