@@ -1,7 +1,7 @@
 import { IfcParser, extractRelationshipsOnDemand } from '@ifc-lite/parser';
 import { type IfcDataStore } from '@ifc-lite/parser';
 import { buildEntitySummary } from './ifc-tree';
-import { GeometryProcessor, type MeshData, type TessellationQuality } from '@ifc-lite/geometry';
+import { GeometryProcessor, decodeInstancedShard, type MeshData, type TessellationQuality } from '@ifc-lite/geometry';
 import { ParquetExporter } from '@ifc-lite/export';
 import { Renderer, type RenderOptions } from '@ifc-lite/renderer';
 import type { EntitySummary, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
@@ -11,6 +11,85 @@ function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/** Alpha cutoff matching @ifc-lite/renderer's opaque/transparent instanced split. */
+const OPAQUE_ALPHA_CUTOFF = 0.99;
+
+/**
+ * Expand GPU-instancing shards (IFNS) into flat `MeshData` the renderer's
+ * `addMeshes` path can upload. With `enableInstancing: true` the WASM kernel
+ * meshes each repeated template ONCE (the whole point — it skips re-running
+ * CSG/booleans on thousands of byte-identical steel members) and emits the
+ * repeated OPAQUE occurrences as instanced shards instead of flat meshes.
+ * This app's `Renderer` wrapper has no public instanced-upload path, so we
+ * materialise each occurrence on the JS side: cheap per-vertex matrix-transform
+ * copies, not WASM geometry work. We reproduce the renderer's instance frame
+ * `SWAP · transform · T(origin)` (worldVertex = transform·(origin+position),
+ * then IFC Z-up→Y-up swap (x,y,z)→(x,z,-y), identical to the flat path).
+ *
+ * Transparent occurrences are skipped: the geometry processor still emits those
+ * as flat meshes (in `event.meshes`), so materialising them here would
+ * double-draw — same cutoff the renderer's `prepareInstancedRender` uses.
+ */
+function materializeInstancedShards(shards: ArrayBuffer[]): MeshData[] {
+  const out: MeshData[] = [];
+  for (const shard of shards) {
+    let decoded;
+    try {
+      decoded = decodeInstancedShard(shard);
+    } catch {
+      continue;
+    }
+    for (const inst of decoded.instances) {
+      if (inst.color[3] < OPAQUE_ALPHA_CUTOFF) continue; // transparent → flat path
+      const tpl = decoded.templates[inst.templateIndex];
+      if (!tpl) continue;
+      const m = inst.transform; // row-major mat4
+      const [ox, oy, oz] = tpl.origin;
+      const src = tpl.positions;
+      const srcN = tpl.normals;
+      const vertexCount = src.length / 3;
+      const positions = new Float32Array(src.length);
+      const normals = new Float32Array(src.length);
+      for (let i = 0; i < vertexCount; i++) {
+        const j = i * 3;
+        // worldVertex = transform · (origin + localPosition)
+        const ax = src[j] + ox;
+        const ay = src[j + 1] + oy;
+        const az = src[j + 2] + oz;
+        const bx = m[0] * ax + m[1] * ay + m[2] * az + m[3];
+        const by = m[4] * ax + m[5] * ay + m[6] * az + m[7];
+        const bz = m[8] * ax + m[9] * ay + m[10] * az + m[11];
+        // IFC Z-up → WebGL Y-up swap (matches the flat MeshData frame)
+        positions[j] = bx;
+        positions[j + 1] = bz;
+        positions[j + 2] = -by;
+        // normals: linear part only (no translation, no origin)
+        const nx = srcN[j];
+        const ny = srcN[j + 1];
+        const nz = srcN[j + 2];
+        const nbx = m[0] * nx + m[1] * ny + m[2] * nz;
+        const nby = m[4] * nx + m[5] * ny + m[6] * nz;
+        const nbz = m[8] * nx + m[9] * ny + m[10] * nz;
+        const yx = nbx;
+        const yy = nbz;
+        const yz = -nby;
+        const len = Math.hypot(yx, yy, yz) || 1;
+        normals[j] = yx / len;
+        normals[j + 1] = yy / len;
+        normals[j + 2] = yz / len;
+      }
+      out.push({
+        expressId: inst.entityId,
+        positions,
+        normals,
+        indices: tpl.indices.slice(),
+        color: inst.color,
+      });
+    }
+  }
+  return out;
 }
 
 function screenSpacePan(
@@ -191,14 +270,25 @@ export function createIfcLiteAdapter(
   options?: { tessellationQuality?: TessellationQuality },
 ): ViewerAdapter {
   const renderer = new Renderer(canvas);
-  // Keep all geometry on the flat MeshData stream consumed by renderer.addMeshes.
-  // With instancing enabled (the @ifc-lite/geometry v2 default), repeated
-  // elements are emitted as packed `instancedShards` instead of flat meshes;
-  // this app does not decode/upload those shards, so they would be invisible.
-  // tessellationQuality controls curved-surface (pipe/cylinder/NURBS) density.
+  // Geometry settings are pinned to mirror ThatOpen's out-of-the-box defaults
+  // for an apples-to-apples comparison (`@thatopen/components` IfcFragmentSettings
+  // + web-ifc LoaderSettings):
+  //   • enableInstancing: true   ↔ ThatOpen fragments dedup/instance repeated
+  //     parts by design. Repeated OPAQUE occurrences arrive as packed
+  //     `instancedShards` instead of flat meshes — the kernel meshes each
+  //     template ONCE instead of re-running CSG per duplicate. The Renderer
+  //     wrapper exposes no instanced upload, so the streaming loop materialises
+  //     shards into flat MeshData via `materializeInstancedShards`.
+  //   • tessellationQuality: 'medium' ↔ web-ifc default CIRCLE_SEGMENTS = 12
+  //     (ThatOpen does not override it). 'medium' is ifc-lite's historical
+  //     default density. Explicit ?? 'medium' so an unset detail still matches
+  //     ThatOpen's default rather than drifting.
+  //   • mergeLayers omitted (false) ↔ web-ifc does not merge multilayer walls.
+  // (COORDINATE_TO_ORIGIN:true on the ThatOpen side has no GeometryProcessor
+  //  toggle here — ifc-lite recenters via its automatic RTC shift instead.)
   const geometry = new GeometryProcessor({
-    enableInstancing: false,
-    tessellationQuality: options?.tessellationQuality,
+    enableInstancing: true,
+    tessellationQuality: options?.tessellationQuality ?? 'medium',
   });
   let animationFrame = 0;
   let latestStore: IfcDataStore | null = null;
@@ -426,19 +516,28 @@ export function createIfcLiteAdapter(
           case 'start':
             context.onProgress({ phase: 'Preparing geometry stream', percent: 10 });
             break;
-          case 'batch':
+          case 'batch': {
             if (firstBatchAt === null) {
               firstBatchAt = performance.now();
             }
-            latestMeshes.push(...event.meshes);
-            meshCount += event.meshes.length;
-            renderer.addMeshes(event.meshes, true);
+            // Flat (unique + transparent) meshes upload directly.
+            const batchMeshes = event.meshes.slice();
+            // Repeated opaque occurrences arrive as instanced shards; materialise
+            // them so the flat renderer can draw them (kernel still meshed each
+            // template once — that's the instancing win we're measuring).
+            if (event.instancedShards?.length) {
+              batchMeshes.push(...materializeInstancedShards(event.instancedShards));
+            }
+            latestMeshes.push(...batchMeshes);
+            meshCount += batchMeshes.length;
+            renderer.addMeshes(batchMeshes, true);
             context.onProgress({
               phase: `Rendering geometry (${meshCount.toLocaleString()} meshes)`,
               percent: Math.min(90, 45 + Math.log10(Math.max(10, event.totalSoFar || meshCount)) * 12),
             });
-            context.onLog(`IFClite batch: +${event.meshes.length} meshes, total ${meshCount.toLocaleString()}`);
+            context.onLog(`IFClite batch: +${batchMeshes.length} meshes, total ${meshCount.toLocaleString()}`);
             break;
+          }
           case 'complete':
             renderer.fitToView();
             context.onLog(`IFClite geometry complete: ${event.totalMeshes.toLocaleString()} meshes`);
