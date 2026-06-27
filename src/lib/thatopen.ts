@@ -262,6 +262,9 @@ export function createThatOpenAdapter(
       const renderReadyAt = await new Promise<number>((resolve) => {
         requestAnimationFrame(() => resolve(performance.now()));
       });
+      // Model is on screen — stop the open-timer here, symmetric with ifc-lite,
+      // so the fragment-buffer dump + persist below don't inflate "Open time".
+      context.onReady?.();
 
       const fragBufferStart = performance.now();
       const fragBuffer = await model.getBuffer(false);

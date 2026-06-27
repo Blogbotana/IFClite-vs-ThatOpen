@@ -163,6 +163,15 @@ function useViewerState(title: string) {
       markReady() {
         setState((current) => ({ ...current, ready: true }));
       },
+      // Stop the open-timer at render-ready (fired by the adapter's onReady,
+      // before any artifact export). Wins over finish(): once set, it sticks.
+      markOpen() {
+        setState((current) =>
+          current.openMs !== undefined || current.openStartedAt === undefined
+            ? current
+            : { ...current, openMs: performance.now() - current.openStartedAt },
+        );
+      },
       setError(error: string) {
         setState((current) => ({
           ...current,
@@ -176,7 +185,14 @@ function useViewerState(title: string) {
         setState((current) => ({
           ...current,
           busy: false,
-          openMs: current.openStartedAt !== undefined ? performance.now() - current.openStartedAt : current.openMs,
+          // Keep the render-ready open time if onReady already set it; else
+          // fall back to the full load duration (adapters without onReady).
+          openMs:
+            current.openMs !== undefined
+              ? current.openMs
+              : current.openStartedAt !== undefined
+                ? performance.now() - current.openStartedAt
+                : current.openMs,
         }));
       },
       setProgress(phase: string, percent: number) {
@@ -579,6 +595,9 @@ export default function App() {
       api.resetForRun();
       api.startTimer();
       const startedAt = performance.now();
+      // Render-ready open time (model on screen), excluding artifact export.
+      // Falls back to full load duration if the adapter never fires onReady.
+      let openMsAtReady: number | undefined;
       try {
         await adapter.load({
           file: new File([file.buffer], file.name),
@@ -596,6 +615,12 @@ export default function App() {
             artifacts = a;
             if (!disposed) api.setArtifacts(a);
           },
+          onReady: () => {
+            if (openMsAtReady === undefined) {
+              openMsAtReady = performance.now() - startedAt;
+              if (!disposed) api.markOpen();
+            }
+          },
           onTree: () => {},
           onEntityIndex: () => {},
           onSelected: (entity) => !disposed && api.setSelected(entity),
@@ -610,7 +635,10 @@ export default function App() {
         if (!disposed) api.setError(error);
       }
 
-      const openMs = performance.now() - startedAt;
+      // Headline open time = render-ready (model on screen), not full load
+      // (which includes the artifact export). Fall back to full load if the
+      // adapter never signalled onReady (e.g. it errored before render-ready).
+      const openMs = openMsAtReady ?? performance.now() - startedAt;
       return { metrics, artifacts, logs, openMs, error };
     };
 

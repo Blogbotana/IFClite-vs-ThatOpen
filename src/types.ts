@@ -61,6 +61,10 @@ export interface ViewerLoadContext {
   onTree: (tree: TreeNode[]) => void;
   onEntityIndex: (entityIndex: Record<number, EntitySummary>) => void;
   onSelected: (entity?: EntitySummary) => void;
+  /** Fired at render-ready (model on screen) — BEFORE any artifact export, so
+   *  the headline "Open time" measures opening the model, not serializing a
+   *  side-artifact. Both adapters call it; the App stops the open-timer here. */
+  onReady?: () => void;
 }
 
 export interface ViewerAdapter {

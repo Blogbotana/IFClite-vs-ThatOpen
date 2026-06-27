@@ -550,6 +550,11 @@ export function createIfcLiteAdapter(
       const renderReadyAt = await new Promise<number>((resolve) => {
         requestAnimationFrame(() => resolve(performance.now()));
       });
+      // Model is on screen — stop the open-timer here. The BOS/parquet export
+      // below re-serializes all geometry (heavy on large models) and is NOT
+      // part of "opening" — ThatOpen likewise dumps its already-built buffer
+      // outside this point.
+      context.onReady?.();
 
       const artifactsPersistStart = performance.now();
       const artifactFiles: Array<{ name: string; bytes: Uint8Array }> = [];
