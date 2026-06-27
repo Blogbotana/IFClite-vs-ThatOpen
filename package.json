@@ -11,7 +11,6 @@
   "dependencies": {
     "@ifc-lite/export": "^2.1.0",
     "@ifc-lite/geometry": "^2.12.0",
-    "@ifc-lite/geometry-manifold": "npm:@ifc-lite/geometry@2.4.0",
     "@ifc-lite/parser": "^3.4.1",
     "@ifc-lite/renderer": "^1.33.0",
     "@thatopen/components": "^3.4.6",
@@ -32,12 +31,5 @@
     "typescript": "^5.9.3",
     "vite": "~8.0.10",
     "vite-plugin-wasm": "^3.4.1"
-  },
-  "comment-overrides": "The Manifold-era CSG kernel lives in @ifc-lite/wasm@2.4.0; pin it nested under the aliased old geometry so it does not dedupe to the new exact-kernel wasm.",
-  "overrides": {
-    "@ifc-lite/geometry-manifold": {
-      "@ifc-lite/wasm": "2.4.0",
-      "@ifc-lite/data": "2.0.2"
-    }
   }
 }

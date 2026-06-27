@@ -60,7 +60,6 @@ export default defineConfig({
     exclude: [
       '@ifc-lite/export',
       '@ifc-lite/geometry',
-      '@ifc-lite/geometry-manifold',
       '@ifc-lite/parser',
       '@ifc-lite/renderer',
       '@ifc-lite/wasm',

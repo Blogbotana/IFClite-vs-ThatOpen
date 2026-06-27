@@ -10,7 +10,7 @@
   --text-dim: rgba(242, 245, 244, 0.6);
   --text-faint: rgba(242, 245, 244, 0.4);
   --ifclite: #ffb072;
-  --manifold: #b59cff;
+  --flat: #b59cff;
   --thatopen: #7fd8c7;
   --win: #62d68c;
   --radius: 14px;
@@ -232,8 +232,8 @@ input {
   box-shadow: 0 0 10px rgba(255, 176, 114, 0.6);
 }
 
-.viewer-dot.manifold {
-  background: var(--manifold);
+.viewer-dot.flat {
+  background: var(--flat);
   box-shadow: 0 0 10px rgba(181, 156, 255, 0.6);
 }
 
@@ -376,8 +376,8 @@ input {
   background: var(--ifclite);
 }
 
-.viewer-progress-bar.manifold {
-  background: var(--manifold);
+.viewer-progress-bar.flat {
+  background: var(--flat);
 }
 
 .viewer-progress-bar.thatopen {
@@ -496,8 +496,8 @@ input {
   color: var(--ifclite);
 }
 
-.cmp-engine.manifold {
-  color: var(--manifold);
+.cmp-engine.flat {
+  color: var(--flat);
 }
 
 .cmp-engine.thatopen {

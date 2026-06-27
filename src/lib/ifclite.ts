@@ -28,9 +28,10 @@ const OPAQUE_ALPHA_CUTOFF = 0.99;
  * (worldVertex = transform·(origin+position), then IFC Z-up→Y-up swap
  * (x,y,z)→(x,z,-y), identical to the flat path).
  *
- * No-op for the injected Manifold engine, which predates instancing and emits
- * no shards. Transparent occurrences are skipped — the processor still emits
- * those as flat meshes, so materialising them would double-draw.
+ * No-op for the instancing-OFF engine, which emits no shards (all geometry
+ * already streams as flat MeshData). Transparent occurrences are skipped — the
+ * processor still emits those as flat meshes, so materialising them would
+ * double-draw.
  */
 function materializeInstancedShards(shards: ArrayBuffer[]): MeshData[] {
   const out: MeshData[] = [];
@@ -266,8 +267,8 @@ function resolveTreeSelectionExpressId(
 }
 
 // Minimal surface of @ifc-lite/geometry's GeometryProcessor the adapter needs.
-// Declared structurally so a different geometry-engine version (e.g. the old
-// Manifold-kernel build, aliased as @ifc-lite/geometry-manifold) can be injected.
+// Declared structurally so an alternately-configured engine (e.g. the same
+// GeometryProcessor with `enableInstancing: false`) can be injected for A/B.
 export interface IfcLiteGeometryEngine {
   init(): Promise<void>;
   processStreaming(buffer: Uint8Array): AsyncIterable<unknown>;
@@ -284,11 +285,10 @@ export function createIfcLiteAdapter(
   // template ONCE instead of re-running CSG per duplicate. The Renderer wrapper
   // exposes no instanced upload, so the streaming loop materialises shards into
   // flat MeshData via `materializeInstancedShards`.
-  // NOTE: only the default (current exact) engine instances. The injected
-  // Manifold build (geometry@2.4.0) predates instancing and stays flat — so in
-  // this three-way comparison the exact kernel gets the instancing win and the
-  // Manifold engine does not. Keep that in mind when reading kernel-vs-kernel
-  // numbers here.
+  // NOTE: this default engine has instancing ON. The A/B partner adapter
+  // (createIfcLiteNoInstancingAdapter) injects the same GeometryProcessor with
+  // `enableInstancing: false`, so the only variable between the two ifc-lite
+  // columns is instancing — isolating exactly what it buys.
   const geometry: IfcLiteGeometryEngine =
     geometryEngine ?? new GeometryProcessor({ enableInstancing: true });
   let animationFrame = 0;

@@ -30,7 +30,7 @@ import type {
   ViewerState,
 } from './types';
 
-type Accent = 'ifclite' | 'manifold' | 'thatopen';
+type Accent = 'ifclite' | 'flat' | 'thatopen';
 
 interface EngineDef {
   id: EngineId;
@@ -41,8 +41,8 @@ interface EngineDef {
 }
 
 const ENGINE_DEFS: Record<EngineId, EngineDef> = {
-  'ifclite-new': { id: 'ifclite-new', title: 'ifc-lite', subtitle: 'exact 2.12', accent: 'ifclite', kind: 'canvas' },
-  'ifclite-old': { id: 'ifclite-old', title: 'ifc-lite', subtitle: 'Manifold 2.4.0', accent: 'manifold', kind: 'canvas' },
+  'ifclite-new': { id: 'ifclite-new', title: 'ifc-lite', subtitle: 'instancing on', accent: 'ifclite', kind: 'canvas' },
+  'ifclite-old': { id: 'ifclite-old', title: 'ifc-lite', subtitle: 'instancing off', accent: 'flat', kind: 'canvas' },
   thatopen: { id: 'thatopen', title: 'ThatOpen', subtitle: 'web-ifc', accent: 'thatopen', kind: 'host' },
 };
 
@@ -52,8 +52,8 @@ async function createAdapter(id: EngineId, el: HTMLElement): Promise<ViewerAdapt
     return createIfcLiteAdapter(el as HTMLCanvasElement);
   }
   if (id === 'ifclite-old') {
-    const { createIfcLiteManifoldAdapter } = await import(/* webpackChunkName: "viewer-ifclite-manifold" */ './lib/ifclite-manifold');
-    return createIfcLiteManifoldAdapter(el as HTMLCanvasElement);
+    const { createIfcLiteNoInstancingAdapter } = await import(/* webpackChunkName: "viewer-ifclite-noinst" */ './lib/ifclite-noinstancing');
+    return createIfcLiteNoInstancingAdapter(el as HTMLCanvasElement);
   }
   const { createThatOpenAdapter } = await import(/* webpackChunkName: "viewer-thatopen" */ './lib/thatopen');
   return createThatOpenAdapter(el as HTMLDivElement);
@@ -518,8 +518,8 @@ export default function App() {
   const adapterOldRef = useRef<ViewerAdapter | null>(null);
   const adapterThatRef = useRef<ViewerAdapter | null>(null);
 
-  const sNew = useViewerState('ifc-lite exact 2.12');
-  const sOld = useViewerState('ifc-lite Manifold 2.4.0');
+  const sNew = useViewerState('ifc-lite instancing on');
+  const sOld = useViewerState('ifc-lite instancing off');
   const sThat = useViewerState('ThatOpen');
 
   const elRefs: Record<EngineId, React.RefObject<HTMLCanvasElement | null> | React.RefObject<HTMLDivElement | null>> = {
