@@ -2,22 +2,28 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { getPersistedArtifactUrl } from './lib/file-system';
 import {
   type BenchPhase,
+  type DetailKey,
   type EngineId,
   type EngineResult,
   type OrderKey,
   ALL_ENGINES,
+  DETAILS,
+  DETAIL_CIRCLE_SEGMENTS,
   ORDERS,
   clearBenchSession,
   getBenchPhase,
   getBenchFileName,
   getBenchFileSize,
+  getDetailPref,
   getOrderPref,
+  getRunDetail,
   getRunOrder,
   loadBenchFile,
   loadEngineResult,
   nextEngine,
   saveEngineResult,
   setBenchPhase,
+  setDetailPref,
   setOrderPref,
   startBench,
 } from './lib/bench-store';
@@ -46,12 +52,13 @@ const ENGINE_DEFS: Record<EngineId, EngineDef> = {
 };
 
 async function createAdapter(id: EngineId, el: HTMLElement): Promise<ViewerAdapter> {
+  const detail = getRunDetail();
   if (id === 'ifclite') {
     const { createIfcLiteAdapter } = await import(/* webpackChunkName: "viewer-ifclite" */ './lib/ifclite');
-    return createIfcLiteAdapter(el as HTMLCanvasElement);
+    return createIfcLiteAdapter(el as HTMLCanvasElement, { tessellationQuality: detail });
   }
   const { createThatOpenAdapter } = await import(/* webpackChunkName: "viewer-thatopen" */ './lib/thatopen');
-  return createThatOpenAdapter(el as HTMLDivElement);
+  return createThatOpenAdapter(el as HTMLDivElement, { circleSegments: DETAIL_CIRCLE_SEGMENTS[detail] });
 }
 
 function IconBase({ children }: { children: React.ReactNode }) {
@@ -540,6 +547,7 @@ export default function App() {
   });
 
   const [orderPref, setOrderPrefState] = useState<OrderKey>(getOrderPref);
+  const [detailPref, setDetailPrefState] = useState<DetailKey>(getDetailPref);
 
   const selectedFileName = getBenchFileName() ?? 'No IFC file selected';
   const benchSize = getBenchFileSize();
@@ -676,6 +684,11 @@ export default function App() {
     setOrderPrefState(key);
   };
 
+  const selectDetail = (key: DetailKey) => {
+    setDetailPref(key);
+    setDetailPrefState(key);
+  };
+
   const currentIndex = order.indexOf(phase as EngineId);
   const noteFor = (index: number): string | undefined => {
     if (phase === 'idle') return undefined;
@@ -715,6 +728,20 @@ export default function App() {
             </button>
           ))}
         </div>
+
+        <label className="detail-control" title="Curved-surface tessellation detail (ifc-lite tessellationQuality / ThatOpen CIRCLE_SEGMENTS)">
+          <span className="detail-label">Detail</span>
+          <select
+            className="detail-select"
+            value={detailPref}
+            disabled={measuring}
+            onChange={(e) => selectDetail(e.target.value as DetailKey)}
+          >
+            {DETAILS.map((d) => (
+              <option key={d} value={d}>{d}</option>
+            ))}
+          </select>
+        </label>
 
         <div className="file-pill">
           <span className="file-pill-name" title={selectedFileName}>{selectedFileName}</span>

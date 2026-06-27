@@ -66,7 +66,10 @@ function frameObject(world: OBC.World, object: any) {
   );
 }
 
-export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter {
+export function createThatOpenAdapter(
+  container: HTMLDivElement,
+  options?: { circleSegments?: number },
+): ViewerAdapter {
   forceWebIfcSingleThreadInit();
 
   const components = new OBC.Components();
@@ -156,6 +159,12 @@ export function createThatOpenAdapter(container: HTMLDivElement): ViewerAdapter 
           absolute: true,
         },
       });
+      // Detail control: web-ifc CIRCLE_SEGMENTS = number of segments used to
+      // approximate circles/curves (the ThatOpen analogue of ifc-lite's
+      // tessellation quality). Mapped from the chosen detail tier.
+      if (options?.circleSegments !== undefined && ifcLoader.settings.webIfc) {
+        ifcLoader.settings.webIfc.CIRCLE_SEGMENTS = options.circleSegments;
+      }
 
       // Use ThatOpen's Highlighter for click-picking on the viewport.
       const highlighter = components.get(OBF.Highlighter);

@@ -1,7 +1,7 @@
 import { IfcParser, extractRelationshipsOnDemand } from '@ifc-lite/parser';
 import { type IfcDataStore } from '@ifc-lite/parser';
 import { buildEntitySummary } from './ifc-tree';
-import { GeometryProcessor, type MeshData } from '@ifc-lite/geometry';
+import { GeometryProcessor, type MeshData, type TessellationQuality } from '@ifc-lite/geometry';
 import { ParquetExporter } from '@ifc-lite/export';
 import { Renderer, type RenderOptions } from '@ifc-lite/renderer';
 import type { EntitySummary, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
@@ -186,13 +186,20 @@ function resolveTreeSelectionExpressId(
   return pickedExpressId;
 }
 
-export function createIfcLiteAdapter(canvas: HTMLCanvasElement): ViewerAdapter {
+export function createIfcLiteAdapter(
+  canvas: HTMLCanvasElement,
+  options?: { tessellationQuality?: TessellationQuality },
+): ViewerAdapter {
   const renderer = new Renderer(canvas);
   // Keep all geometry on the flat MeshData stream consumed by renderer.addMeshes.
   // With instancing enabled (the @ifc-lite/geometry v2 default), repeated
   // elements are emitted as packed `instancedShards` instead of flat meshes;
   // this app does not decode/upload those shards, so they would be invisible.
-  const geometry = new GeometryProcessor({ enableInstancing: false });
+  // tessellationQuality controls curved-surface (pipe/cylinder/NURBS) density.
+  const geometry = new GeometryProcessor({
+    enableInstancing: false,
+    tessellationQuality: options?.tessellationQuality,
+  });
   let animationFrame = 0;
   let latestStore: IfcDataStore | null = null;
   let latestEntityIndex: Record<number, EntitySummary> = {};

@@ -175,6 +175,42 @@ input {
   cursor: not-allowed;
 }
 
+/* detail (tessellation) selector */
+.detail-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+.detail-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.detail-select {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.detail-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.detail-select option {
+  background: #10202a;
+  color: var(--text);
+}
+
 .viewer-panel {
   display: flex;
   flex-direction: column;

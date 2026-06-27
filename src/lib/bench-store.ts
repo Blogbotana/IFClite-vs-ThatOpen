@@ -21,6 +21,21 @@ export const ORDERS: Record<OrderKey, EngineId[]> = {
   'thatopen-first': ['thatopen', 'ifclite'],
 };
 
+/**
+ * Geometry detail level (curved-surface tessellation), matching ifc-lite's
+ * `TessellationQuality`. Mapped per engine: IFClite uses it directly; ThatOpen
+ * maps it to web-ifc `CIRCLE_SEGMENTS` (see DETAIL_CIRCLE_SEGMENTS).
+ */
+export type DetailKey = 'lowest' | 'low' | 'medium' | 'high' | 'highest';
+export const DETAILS: DetailKey[] = ['lowest', 'low', 'medium', 'high', 'highest'];
+export const DETAIL_CIRCLE_SEGMENTS: Record<DetailKey, number> = {
+  lowest: 6,
+  low: 8,
+  medium: 12,
+  high: 18,
+  highest: 32,
+};
+
 /** Phase = idle (no run), an engine id (that engine is being measured), or done. */
 export type BenchPhase = 'idle' | EngineId | 'done';
 
@@ -37,6 +52,8 @@ const NAME_KEY = 'bench.fileName';
 const SIZE_KEY = 'bench.fileSize';
 const ORDER_RUN_KEY = 'bench.order'; // sessionStorage: order snapshot for the active run
 const ORDER_PREF_KEY = 'bench.orderPref'; // localStorage: persistent order preference
+const DETAIL_RUN_KEY = 'bench.detail'; // sessionStorage: detail snapshot for the active run
+const DETAIL_PREF_KEY = 'bench.detailPref'; // localStorage: persistent detail preference
 const RESULT_KEY = (engine: EngineId) => `bench.result.${engine}`;
 
 const DB_NAME = 'ifc-compare-bench';
@@ -66,6 +83,24 @@ export function nextEngine(phase: EngineId): EngineId | null {
   const order = getRunOrder();
   const index = order.indexOf(phase);
   return index >= 0 && index < order.length - 1 ? order[index + 1] : null;
+}
+
+// ---------------------------------------------------------------------------
+// Detail level: preference (localStorage) + active-run snapshot (sessionStorage)
+// ---------------------------------------------------------------------------
+export function getDetailPref(): DetailKey {
+  const value = localStorage.getItem(DETAIL_PREF_KEY) as DetailKey | null;
+  return value && DETAILS.includes(value) ? value : 'medium';
+}
+
+export function setDetailPref(key: DetailKey): void {
+  localStorage.setItem(DETAIL_PREF_KEY, key);
+}
+
+/** The detail level for the current run (snapshot), falling back to preference. */
+export function getRunDetail(): DetailKey {
+  const value = sessionStorage.getItem(DETAIL_RUN_KEY) as DetailKey | null;
+  return value && DETAILS.includes(value) ? value : getDetailPref();
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +144,7 @@ export function clearBenchSession(): void {
   sessionStorage.removeItem(NAME_KEY);
   sessionStorage.removeItem(SIZE_KEY);
   sessionStorage.removeItem(ORDER_RUN_KEY);
+  sessionStorage.removeItem(DETAIL_RUN_KEY);
   ALL_ENGINES.forEach((id) => sessionStorage.removeItem(RESULT_KEY(id)));
 }
 
@@ -144,6 +180,7 @@ export async function startBench(file: File): Promise<void> {
   sessionStorage.setItem(NAME_KEY, file.name);
   sessionStorage.setItem(SIZE_KEY, String(file.size));
   sessionStorage.setItem(ORDER_RUN_KEY, getOrderPref());
+  sessionStorage.setItem(DETAIL_RUN_KEY, getDetailPref());
   setBenchPhase(getRunOrder()[0]);
 }
 
