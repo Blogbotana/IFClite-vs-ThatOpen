@@ -49,6 +49,9 @@ export interface ViewerState {
   openStartedAt?: number;
   /** Final model open duration in ms, set once the load finishes. */
   openMs?: number;
+  /** Warm re-open duration in ms: reload the persisted geometry cache
+   *  (ifc-lite @ifc-lite/cache blob, ThatOpen .frag) — no parse, no CSG. */
+  reopenMs?: number;
 }
 
 export interface ViewerLoadContext {
@@ -72,5 +75,10 @@ export interface ViewerAdapter {
   dispose: () => void;
   reset: () => Promise<void> | void;
   load: (context: ViewerLoadContext) => Promise<void>;
+  /** Warm re-open: reload the geometry the previous load() cached, skipping
+   *  parse + CSG. Resolves once the cached model is rendered. Optional — the
+   *  App times it and shows the "Re-open (cache)" row only for adapters that
+   *  implement it. Must be called after a successful load(). */
+  reopen?: (context: ViewerLoadContext, cachedBuffer?: ArrayBuffer) => Promise<void>;
   select?: (expressId?: number) => Promise<void> | void;
 }

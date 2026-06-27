@@ -44,6 +44,8 @@ export interface EngineResult {
   artifacts: ArtifactInfo[];
   logs: string[];
   openMs?: number;
+  /** Warm re-open (from geometry cache) duration in ms. */
+  reopenMs?: number;
   error?: string;
 }
 
@@ -54,6 +56,8 @@ const ORDER_RUN_KEY = 'bench.order'; // sessionStorage: order snapshot for the a
 const ORDER_PREF_KEY = 'bench.orderPref'; // localStorage: persistent order preference
 const DETAIL_RUN_KEY = 'bench.detail'; // sessionStorage: detail snapshot for the active run
 const DETAIL_PREF_KEY = 'bench.detailPref'; // localStorage: persistent detail preference
+const PARALLEL_RUN_KEY = 'bench.parallel'; // sessionStorage: parallel snapshot for the active run
+const PARALLEL_PREF_KEY = 'bench.parallelPref'; // localStorage: persistent parallel preference
 const RESULT_KEY = (engine: EngineId) => `bench.result.${engine}`;
 
 const DB_NAME = 'ifc-compare-bench';
@@ -104,6 +108,26 @@ export function getRunDetail(): DetailKey {
 }
 
 // ---------------------------------------------------------------------------
+// Parallel geometry (ifc-lite Web Worker pool): pref + active-run snapshot.
+// ON = `processParallel` (multi-core WASM); OFF = single-thread `processStreaming`.
+// Stored as '1'/'0'. ifc-lite only — ThatOpen already runs its own worker.
+// ---------------------------------------------------------------------------
+export function getParallelPref(): boolean {
+  const value = localStorage.getItem(PARALLEL_PREF_KEY);
+  return value === null ? true : value === '1';
+}
+
+export function setParallelPref(on: boolean): void {
+  localStorage.setItem(PARALLEL_PREF_KEY, on ? '1' : '0');
+}
+
+/** Whether the current run uses the parallel worker pool (snapshot). */
+export function getRunParallel(): boolean {
+  const value = sessionStorage.getItem(PARALLEL_RUN_KEY);
+  return value === null ? getParallelPref() : value === '1';
+}
+
+// ---------------------------------------------------------------------------
 // sessionStorage: phase, file name, per-engine results
 // ---------------------------------------------------------------------------
 export function getBenchPhase(): BenchPhase {
@@ -145,6 +169,7 @@ export function clearBenchSession(): void {
   sessionStorage.removeItem(SIZE_KEY);
   sessionStorage.removeItem(ORDER_RUN_KEY);
   sessionStorage.removeItem(DETAIL_RUN_KEY);
+  sessionStorage.removeItem(PARALLEL_RUN_KEY);
   ALL_ENGINES.forEach((id) => sessionStorage.removeItem(RESULT_KEY(id)));
 }
 
@@ -181,6 +206,7 @@ export async function startBench(file: File): Promise<void> {
   sessionStorage.setItem(SIZE_KEY, String(file.size));
   sessionStorage.setItem(ORDER_RUN_KEY, getOrderPref());
   sessionStorage.setItem(DETAIL_RUN_KEY, getDetailPref());
+  sessionStorage.setItem(PARALLEL_RUN_KEY, getParallelPref() ? '1' : '0');
   setBenchPhase(getRunOrder()[0]);
 }
 

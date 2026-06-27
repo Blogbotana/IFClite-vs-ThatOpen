@@ -3,6 +3,7 @@ import { type IfcDataStore } from '@ifc-lite/parser';
 import { buildEntitySummary } from './ifc-tree';
 import { GeometryProcessor, decodeInstancedShard, type MeshData, type TessellationQuality } from '@ifc-lite/geometry';
 import { ParquetExporter } from '@ifc-lite/export';
+import { BinaryCacheWriter, BinaryCacheReader } from '@ifc-lite/cache';
 import { Renderer, type RenderOptions } from '@ifc-lite/renderer';
 import type { EntitySummary, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
 import { persistArtifacts, textBytes } from './file-system';
@@ -15,6 +16,23 @@ function formatBytes(size: number): string {
 
 /** Alpha cutoff matching @ifc-lite/renderer's opaque/transparent instanced split. */
 const OPAQUE_ALPHA_CUTOFF = 0.99;
+
+/**
+ * Mesh `ifcType`s the kernel emits but that must NOT be rendered. Critically,
+ * the kernel emits IfcOpeningElement geometry (the void *cutters* — e.g. Tekla
+ * drill-hole cylinders) as ordinary meshes; the consumer is expected to drop
+ * them (the production viewer and the `main_dion` profiler both do). If left in,
+ * each cutter renders as a solid filling exactly its hole, so a correctly-cut
+ * plate looks un-cut. IfcSpace/IfcBuilding(Storey) are excluded for parity with
+ * ThatOpen/web-ifc, which don't render them by default.
+ */
+const EXCLUDED_RENDER_TYPES = new Set([
+  'IfcOpeningElement',
+  'IfcOpeningStandardCase',
+  'IfcSpace',
+  'IfcBuilding',
+  'IfcBuildingStorey',
+]);
 
 /**
  * Expand GPU-instancing shards (IFNS) into flat `MeshData` the renderer's
@@ -267,7 +285,7 @@ function resolveTreeSelectionExpressId(
 
 export function createIfcLiteAdapter(
   canvas: HTMLCanvasElement,
-  options?: { tessellationQuality?: TessellationQuality },
+  options?: { tessellationQuality?: TessellationQuality; parallel?: boolean },
 ): ViewerAdapter {
   const renderer = new Renderer(canvas);
   // Geometry settings are pinned to mirror ThatOpen's out-of-the-box defaults
@@ -294,6 +312,10 @@ export function createIfcLiteAdapter(
   let latestStore: IfcDataStore | null = null;
   let latestEntityIndex: Record<number, EntitySummary> = {};
   let latestMeshes: MeshData[] = [];
+  // Persisted geometry cache (@ifc-lite/cache) produced on cold load and
+  // reloaded by reopen() — the warm-open path (no parse, no CSG).
+  let cachedModelBuffer: ArrayBuffer | null = null;
+  let latestCoordinateInfo: unknown = null;
   let onSelectedCallback: ViewerLoadContext['onSelected'] | null = null;
   let selectedExpressId: number | null = null;
   let lastInteractionAt = 0;
@@ -351,7 +373,8 @@ export function createIfcLiteAdapter(
     lastX = e.clientX;
     lastY = e.clientY;
     const cam = renderer.getCamera();
-    if (dragButton === 2 || (dragButton === 0 && e.shiftKey)) {
+    // Pan: middle (wheel) button, right button, or Shift+left — CAD convention.
+    if (dragButton === 1 || dragButton === 2 || (dragButton === 0 && e.shiftKey)) {
       screenSpacePan(cam, canvas, dx, dy);
     } else {
       cam.orbit(dx * ORBIT_SENSITIVITY_FACTOR, dy * ORBIT_SENSITIVITY_FACTOR, false);
@@ -511,7 +534,13 @@ export function createIfcLiteAdapter(
 
       let meshCount = 0;
       let firstBatchAt: number | null = null;
-      for await (const event of geometry.processStreaming(fileBytes)) {
+      // Multi-core WASM (Web Worker pool) vs single-thread streaming. Both yield
+      // the same StreamingGeometryEvent, so the batch loop below is identical.
+      const geometryStream = options?.parallel
+        ? geometry.processParallel(fileBytes)
+        : geometry.processStreaming(fileBytes);
+      context.onLog(`IFClite geometry: ${options?.parallel ? 'parallel (worker pool)' : 'single-thread'}`);
+      for await (const event of geometryStream) {
         switch (event.type) {
           case 'start':
             context.onProgress({ phase: 'Preparing geometry stream', percent: 10 });
@@ -528,17 +557,24 @@ export function createIfcLiteAdapter(
             if (event.instancedShards?.length) {
               batchMeshes.push(...materializeInstancedShards(event.instancedShards));
             }
-            latestMeshes.push(...batchMeshes);
-            meshCount += batchMeshes.length;
-            renderer.addMeshes(batchMeshes, true);
+            // Drop void/space cutter geometry (esp. IfcOpeningElement) — the
+            // kernel emits it, but rendering it fills every hole and makes cut
+            // plates look un-cut. See EXCLUDED_RENDER_TYPES.
+            const renderMeshes = batchMeshes.filter(
+              (m) => !(m.ifcType && EXCLUDED_RENDER_TYPES.has(m.ifcType)),
+            );
+            latestMeshes.push(...renderMeshes);
+            meshCount += renderMeshes.length;
+            renderer.addMeshes(renderMeshes, true);
             context.onProgress({
               phase: `Rendering geometry (${meshCount.toLocaleString()} meshes)`,
               percent: Math.min(90, 45 + Math.log10(Math.max(10, event.totalSoFar || meshCount)) * 12),
             });
-            context.onLog(`IFClite batch: +${batchMeshes.length} meshes, total ${meshCount.toLocaleString()}`);
+            context.onLog(`IFClite batch: +${renderMeshes.length} meshes, total ${meshCount.toLocaleString()}`);
             break;
           }
           case 'complete':
+            latestCoordinateInfo = event.coordinateInfo ?? latestCoordinateInfo;
             renderer.fitToView();
             context.onLog(`IFClite geometry complete: ${event.totalMeshes.toLocaleString()} meshes`);
             break;
@@ -563,6 +599,41 @@ export function createIfcLiteAdapter(
         artifactFiles.push({ name: 'model.bos', bytes: await parquet.exportBOS({ includeGeometry: true }) });
       } catch (error) {
         context.onLog(`IFClite parquet export skipped: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      // Build the warm-open geometry cache (@ifc-lite/cache) — the same binary
+      // format the production viewer persists for instant re-open. Held in
+      // memory for reopen(); best-effort (a failure just disables warm-open).
+      try {
+        let totalVertices = 0;
+        let totalTriangles = 0;
+        for (const m of latestMeshes) {
+          totalVertices += m.positions.length / 3;
+          totalTriangles += m.indices.length / 3;
+        }
+        const cacheStore = {
+          schema: latestStore.schemaVersion === 'IFC4' ? 1 : latestStore.schemaVersion === 'IFC4X3' ? 2 : 0,
+          entityCount: latestStore.entityCount || 0,
+          strings: latestStore.strings,
+          entities: latestStore.entities,
+          properties: latestStore.properties,
+          quantities: latestStore.quantities,
+          relationships: latestStore.relationships,
+          spatialHierarchy: latestStore.spatialHierarchy,
+          entityIndex: latestStore.entityIndex,
+        };
+        const writer = new BinaryCacheWriter();
+        cachedModelBuffer = await writer.write(
+          cacheStore as any,
+          { meshes: latestMeshes, totalVertices, totalTriangles, coordinateInfo: latestCoordinateInfo as any },
+          context.buffer,
+          { includeGeometry: true },
+        );
+        // Persist it too, so the end-of-run "show all models" step can reopen
+        // this engine from disk after the page reload (the in-memory copy is gone).
+        artifactFiles.push({ name: 'model.cache', bytes: new Uint8Array(cachedModelBuffer) });
+      } catch (error) {
+        cachedModelBuffer = null;
+        context.onLog(`IFClite cache write skipped: ${error instanceof Error ? error.message : String(error)}`);
       }
       artifactFiles.push({
         name: 'metrics.json',
@@ -590,6 +661,29 @@ export function createIfcLiteAdapter(
 
       // Ensure the view is zoomed to default after loading completes
       renderer.fitToView();
+    },
+    async reopen(context: ViewerLoadContext, cachedBuffer?: ArrayBuffer) {
+      // In-memory cache for the warm-open metric; an external buffer (persisted
+      // `model.cache`) for the end-of-run "show all models" reopen after reload.
+      const buffer = cachedBuffer ?? cachedModelBuffer;
+      if (!buffer) {
+        throw new Error('IFClite re-open: no geometry cache (load() must run first)');
+      }
+      context.onProgress({ phase: 'Re-opening from cache', percent: 10 });
+      // Drop the rendered scene and rebuild it purely from the cached geometry —
+      // no STEP parse, no WASM CSG, just deserialize + GPU upload.
+      renderer.getScene().clear();
+      renderer.clearCaches();
+      const reader = new BinaryCacheReader();
+      const result = await reader.read(buffer);
+      const meshes = (result.geometry?.meshes ?? []) as MeshData[];
+      renderer.addMeshes(meshes, false);
+      renderer.fitToView();
+      renderer.requestRender();
+      // One frame so "render ready" is real, matching the cold path's measure.
+      await new Promise<number>((resolve) => requestAnimationFrame(() => resolve(performance.now())));
+      context.onProgress({ phase: 'Complete', percent: 100 });
+      context.onLog(`IFClite re-opened from cache: ${meshes.length.toLocaleString()} meshes`);
     },
     select(expressId?: number) {
       selectedExpressId = expressId ?? null;

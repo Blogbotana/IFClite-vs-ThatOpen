@@ -85,6 +85,9 @@ export function createThatOpenAdapter(
   let currentModelId: string | null = null;
   let activeLoadModelId: string | null = null;
   let onSelectedCallback: ViewerLoadContext['onSelected'] | null = null;
+  // Fragment buffer from the cold load — the warm-open cache (reopen() loads
+  // these pre-meshed fragments directly, skipping IFC parse + web-ifc geometry).
+  let cachedFragBuffer: ArrayBuffer | null = null;
 
   // Re-aim the camera's orbit pivot at the bounding-box centre of the selected
   // element so dragging rotates the view around that object.
@@ -137,6 +140,10 @@ export function createThatOpenAdapter(
       if (!controls) {
         throw new Error('ThatOpen camera controls were not initialized.');
       }
+      // Middle (wheel) button drags → pan, matching the ifc-lite viewer and the
+      // CAD convention. camera-controls default for `middle` is DOLLY (16);
+      // ACTION.TRUCK = 2 is screen-space pan. (Wheel scroll stays dolly/zoom.)
+      (controls as any).mouseButtons.middle = 2;
       // Use the locally-served worker (copied to public/ by vite.config.ts) so
       // it is same-origin and never blocked by COEP or network issues.
       fragments.init('/thatopen-worker.mjs');
@@ -269,6 +276,7 @@ export function createThatOpenAdapter(
       const fragBufferStart = performance.now();
       const fragBuffer = await model.getBuffer(false);
       const fragBufferEnd = performance.now();
+      cachedFragBuffer = fragBuffer.slice(0); // keep a copy for the warm re-open
       
       const artifactsPersistStart = performance.now();
       const artifactList = await persistArtifacts('thatopen', context.file.name, [
@@ -297,6 +305,28 @@ export function createThatOpenAdapter(
 
       // Ensure the view is zoomed to default after loading completes
       frameObject(world as unknown as OBC.World, currentModel?.object);
+    },
+    async reopen(context: ViewerLoadContext, cachedBuffer?: ArrayBuffer) {
+      // In-memory .frag for the warm-open metric; an external buffer (persisted
+      // `.frag` artifact) for the end-of-run "show all models" reopen.
+      const fragBytes = cachedBuffer ?? cachedFragBuffer;
+      if (!fragBytes) {
+        throw new Error('ThatOpen re-open: no fragment cache (load() must run first)');
+      }
+      context.onProgress({ phase: 'Re-opening from fragments', percent: 10 });
+      await clearCurrentModel();
+      // Load the pre-meshed .frag directly — no IFC parse, no web-ifc geometry.
+      const modelId = `reopen-${Date.now()}`;
+      activeLoadModelId = modelId;
+      const model = await fragments.core.load(new Uint8Array(fragBytes), { modelId, raw: false });
+      activeLoadModelId = null;
+      currentModel = model;
+      currentModelId = model.modelId ?? modelId;
+      frameObject(world as unknown as OBC.World, model.object);
+      fragments.core.update(true);
+      await new Promise<number>((resolve) => requestAnimationFrame(() => resolve(performance.now())));
+      context.onProgress({ phase: 'Complete', percent: 100 });
+      context.onLog('ThatOpen re-opened from fragments (.frag)');
     },
     select() {
       // Selection highlight is handled by ThatOpen's Highlighter interaction pipeline.

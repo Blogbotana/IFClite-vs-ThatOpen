@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@ifc-lite/cache": "^2.0.8",
     "@ifc-lite/export": "^2.1.0",
     "@ifc-lite/geometry": "^2.12.0",
     "@ifc-lite/parser": "^3.4.1",

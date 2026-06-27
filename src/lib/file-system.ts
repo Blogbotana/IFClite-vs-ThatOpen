@@ -65,6 +65,34 @@ export function textBytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
+/** Read a persisted artifact's raw bytes by its stored `path`. Used by the
+ *  end-of-run "show all models" step to reopen earlier engines from the
+ *  geometry cache (ifc-lite `.cache`, ThatOpen `.frag`) without re-running. */
+export async function readPersistedArtifactBytes(path: string): Promise<ArrayBuffer | null> {
+  if (!path || path === 'browser-memory') {
+    return null;
+  }
+  const root = await getRootDirectory();
+  if (!root) {
+    return null;
+  }
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length < 2) {
+    return null;
+  }
+  try {
+    let current = root;
+    for (const segment of segments.slice(0, -1)) {
+      current = await current.getDirectoryHandle(segment);
+    }
+    const fileHandle = await current.getFileHandle(segments[segments.length - 1]);
+    const file = await fileHandle.getFile();
+    return file.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
 export async function getPersistedArtifactUrl(path: string): Promise<string | null> {
   if (!path || path === 'browser-memory') {
     return null;

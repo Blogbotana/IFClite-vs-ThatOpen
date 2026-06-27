@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getPersistedArtifactUrl } from './lib/file-system';
+import { getPersistedArtifactUrl, readPersistedArtifactBytes } from './lib/file-system';
 import {
   type BenchPhase,
   type DetailKey,
@@ -16,8 +16,10 @@ import {
   getBenchFileSize,
   getDetailPref,
   getOrderPref,
+  getParallelPref,
   getRunDetail,
   getRunOrder,
+  getRunParallel,
   loadBenchFile,
   loadEngineResult,
   nextEngine,
@@ -25,6 +27,7 @@ import {
   setBenchPhase,
   setDetailPref,
   setOrderPref,
+  setParallelPref,
   startBench,
 } from './lib/bench-store';
 import type {
@@ -55,7 +58,7 @@ async function createAdapter(id: EngineId, el: HTMLElement): Promise<ViewerAdapt
   const detail = getRunDetail();
   if (id === 'ifclite') {
     const { createIfcLiteAdapter } = await import(/* webpackChunkName: "viewer-ifclite" */ './lib/ifclite');
-    return createIfcLiteAdapter(el as HTMLCanvasElement, { tessellationQuality: detail });
+    return createIfcLiteAdapter(el as HTMLCanvasElement, { tessellationQuality: detail, parallel: getRunParallel() });
   }
   const { createThatOpenAdapter } = await import(/* webpackChunkName: "viewer-thatopen" */ './lib/thatopen');
   return createThatOpenAdapter(el as HTMLDivElement, { circleSegments: DETAIL_CIRCLE_SEGMENTS[detail] });
@@ -155,6 +158,7 @@ function useViewerState(title: string) {
           entityIndex: {},
           openStartedAt: undefined,
           openMs: undefined,
+          reopenMs: undefined,
         });
       },
       startTimer() {
@@ -216,6 +220,9 @@ function useViewerState(title: string) {
       setSelected(entity?: EntitySummary) {
         setState((current) => ({ ...current, selected: entity }));
       },
+      setReopen(ms: number) {
+        setState((current) => ({ ...current, reopenMs: ms }));
+      },
       hydrate(result: EngineResult) {
         setState((current) => ({
           ...current,
@@ -227,6 +234,7 @@ function useViewerState(title: string) {
           metrics: result.metrics,
           artifacts: result.artifacts,
           openMs: result.openMs,
+          reopenMs: result.reopenMs,
         }));
       },
     }),
@@ -254,6 +262,7 @@ interface CompareRow {
 
 const COMPARE_ROWS: CompareRow[] = [
   { label: 'Open time', get: (s) => (s.openMs !== undefined ? formatSeconds(s.openMs) : '—'), kind: 'time' },
+  { label: 'Re-open (cache)', get: (s) => (s.reopenMs !== undefined ? formatSeconds(s.reopenMs) : '—'), kind: 'time' },
   { label: 'End-to-end', get: (s) => viewerLabelValue(s.metrics, 'End-to-end time'), kind: 'time' },
   {
     label: 'Parse / convert',
@@ -564,6 +573,7 @@ export default function App() {
 
   const [orderPref, setOrderPrefState] = useState<OrderKey>(getOrderPref);
   const [detailPref, setDetailPrefState] = useState<DetailKey>(getDetailPref);
+  const [parallelPref, setParallelPrefState] = useState<boolean>(getParallelPref);
 
   const selectedFileName = getBenchFileName() ?? 'No IFC file selected';
   const benchSize = getBenchFileSize();
@@ -585,6 +595,8 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
     let createdAdapter: ViewerAdapter | null = null;
+    // Adapters created for the end-of-run "show all models" reopen (not measured).
+    const reopenedAdapters: ViewerAdapter[] = [];
 
     const measure = async (api: ViewerApi, adapter: ViewerAdapter, title: string, file: { name: string; buffer: ArrayBuffer }): Promise<EngineResult> => {
       const logs: string[] = [];
@@ -639,7 +651,36 @@ export default function App() {
       // (which includes the artifact export). Fall back to full load if the
       // adapter never signalled onReady (e.g. it errored before render-ready).
       const openMs = openMsAtReady ?? performance.now() - startedAt;
-      return { metrics, artifacts, logs, openMs, error };
+
+      // Warm re-open: reload the geometry the cold load just cached (no parse,
+      // no CSG) and time it. Only for adapters that implement reopen().
+      let reopenMs: number | undefined;
+      if (!error && !disposed && adapter.reopen) {
+        try {
+          const reopenStart = performance.now();
+          await adapter.reopen({
+            file: new File([file.buffer], file.name),
+            buffer: file.buffer,
+            onProgress: ({ phase: p, percent }) => !disposed && api.setProgress(p, percent),
+            onLog: (message) => {
+              logs.push(message);
+              if (!disposed) api.appendLog(message);
+            },
+            onMetrics: () => {},
+            onArtifacts: () => {},
+            onTree: () => {},
+            onEntityIndex: () => {},
+            onSelected: () => {},
+          });
+          reopenMs = performance.now() - reopenStart;
+          if (!disposed) api.setReopen(reopenMs);
+        } catch (e) {
+          logs.push(`${title}: re-open failed: ${e instanceof Error ? e.message : String(e)}`);
+          if (!disposed) api.appendLog(logs[logs.length - 1]);
+        }
+      }
+
+      return { metrics, artifacts, logs, openMs, reopenMs, error };
     };
 
     const orchestrate = async () => {
@@ -684,6 +725,47 @@ export default function App() {
         setBenchPhase(next);
         window.setTimeout(() => window.location.reload(), 700);
       } else {
+        // Last engine measured. Now render every OTHER engine's model too,
+        // reopened from its persisted geometry cache (ifc-lite → model.cache,
+        // ThatOpen → .frag). This runs AFTER all results are saved, so it never
+        // touches the measured timings — it's purely the final side-by-side view.
+        for (const id of getRunOrder()) {
+          if (id === phase || disposed) continue;
+          const stored = loadEngineResult(id);
+          const artifact = stored?.artifacts.find((a) =>
+            id === 'thatopen' ? a.name.endsWith('.frag') : a.name === 'model.cache',
+          );
+          const otherEl = elRefs[id].current;
+          if (!stored || !artifact || !otherEl) continue;
+          try {
+            states[id].api.setProgress('Re-opening from cache', 10);
+            const bytes = await readPersistedArtifactBytes(artifact.path);
+            if (!bytes || disposed) continue;
+            const otherAdapter = await createAdapter(id, otherEl);
+            reopenedAdapters.push(otherAdapter);
+            adapterRefs[id].current = otherAdapter;
+            await otherAdapter.init();
+            if (disposed) break;
+            await otherAdapter.reopen?.(
+              {
+                file: new File([file.buffer], file.name),
+                buffer: file.buffer,
+                onProgress: ({ phase: p, percent }) => !disposed && states[id].api.setProgress(p, percent),
+                onLog: (m) => !disposed && states[id].api.appendLog(m),
+                onMetrics: () => {},
+                onArtifacts: () => {},
+                onTree: () => {},
+                onEntityIndex: () => {},
+                onSelected: () => {},
+              },
+              bytes,
+            );
+          } catch (e) {
+            if (!disposed) {
+              states[id].api.appendLog(`${id}: final reopen failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+        }
         setBenchPhase('done');
       }
     };
@@ -693,6 +775,7 @@ export default function App() {
     return () => {
       disposed = true;
       createdAdapter?.dispose();
+      reopenedAdapters.forEach((a) => a.dispose());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
@@ -715,6 +798,11 @@ export default function App() {
   const selectDetail = (key: DetailKey) => {
     setDetailPref(key);
     setDetailPrefState(key);
+  };
+
+  const toggleParallel = (on: boolean) => {
+    setParallelPref(on);
+    setParallelPrefState(on);
   };
 
   const currentIndex = order.indexOf(phase as EngineId);
@@ -770,6 +858,29 @@ export default function App() {
             ))}
           </select>
         </label>
+
+        <div
+          className="order-toggle"
+          role="group"
+          aria-label="ifc-lite threads"
+          title="ifc-lite geometry: multi-core worker pool (processParallel) vs single thread (processStreaming). ThatOpen always uses its own worker."
+        >
+          {[
+            { on: true, label: 'Multi-core' },
+            { on: false, label: '1 thread' },
+          ].map(({ on, label }) => (
+            <button
+              key={label}
+              className={`order-btn${parallelPref === on ? ' active' : ''}`}
+              aria-pressed={parallelPref === on}
+              disabled={measuring}
+              onClick={() => toggleParallel(on)}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         <div className="file-pill">
           <span className="file-pill-name" title={selectedFileName}>{selectedFileName}</span>
