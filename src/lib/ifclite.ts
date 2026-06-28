@@ -285,7 +285,7 @@ function resolveTreeSelectionExpressId(
 
 export function createIfcLiteAdapter(
   canvas: HTMLCanvasElement,
-  options?: { tessellationQuality?: TessellationQuality; parallel?: boolean },
+  options?: { tessellationQuality?: TessellationQuality; parallel?: boolean; instancing?: boolean },
 ): ViewerAdapter {
   const renderer = new Renderer(canvas);
   // Geometry settings are pinned to mirror ThatOpen's out-of-the-box defaults
@@ -305,7 +305,7 @@ export function createIfcLiteAdapter(
   // (COORDINATE_TO_ORIGIN:true on the ThatOpen side has no GeometryProcessor
   //  toggle here — ifc-lite recenters via its automatic RTC shift instead.)
   const geometry = new GeometryProcessor({
-    enableInstancing: true,
+    enableInstancing: options?.instancing ?? true,
     tessellationQuality: options?.tessellationQuality ?? 'medium',
   });
   let animationFrame = 0;

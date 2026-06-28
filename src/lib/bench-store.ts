@@ -58,6 +58,8 @@ const DETAIL_RUN_KEY = 'bench.detail'; // sessionStorage: detail snapshot for th
 const DETAIL_PREF_KEY = 'bench.detailPref'; // localStorage: persistent detail preference
 const PARALLEL_RUN_KEY = 'bench.parallel'; // sessionStorage: parallel snapshot for the active run
 const PARALLEL_PREF_KEY = 'bench.parallelPref'; // localStorage: persistent parallel preference
+const INSTANCING_RUN_KEY = 'bench.instancing'; // sessionStorage: instancing snapshot for the active run
+const INSTANCING_PREF_KEY = 'bench.instancingPref'; // localStorage: persistent instancing preference
 const RESULT_KEY = (engine: EngineId) => `bench.result.${engine}`;
 
 const DB_NAME = 'ifc-compare-bench';
@@ -128,6 +130,26 @@ export function getRunParallel(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// GPU instancing (ifc-lite `enableInstancing`): pref + active-run snapshot.
+// ON = repeated parts meshed once and instanced; OFF = every part meshed
+// individually (flat). Stored as '1'/'0'. ifc-lite only.
+// ---------------------------------------------------------------------------
+export function getInstancingPref(): boolean {
+  const value = localStorage.getItem(INSTANCING_PREF_KEY);
+  return value === null ? true : value === '1';
+}
+
+export function setInstancingPref(on: boolean): void {
+  localStorage.setItem(INSTANCING_PREF_KEY, on ? '1' : '0');
+}
+
+/** Whether the current run uses GPU instancing (snapshot). */
+export function getRunInstancing(): boolean {
+  const value = sessionStorage.getItem(INSTANCING_RUN_KEY);
+  return value === null ? getInstancingPref() : value === '1';
+}
+
+// ---------------------------------------------------------------------------
 // sessionStorage: phase, file name, per-engine results
 // ---------------------------------------------------------------------------
 export function getBenchPhase(): BenchPhase {
@@ -170,6 +192,7 @@ export function clearBenchSession(): void {
   sessionStorage.removeItem(ORDER_RUN_KEY);
   sessionStorage.removeItem(DETAIL_RUN_KEY);
   sessionStorage.removeItem(PARALLEL_RUN_KEY);
+  sessionStorage.removeItem(INSTANCING_RUN_KEY);
   ALL_ENGINES.forEach((id) => sessionStorage.removeItem(RESULT_KEY(id)));
 }
 
@@ -207,6 +230,7 @@ export async function startBench(file: File): Promise<void> {
   sessionStorage.setItem(ORDER_RUN_KEY, getOrderPref());
   sessionStorage.setItem(DETAIL_RUN_KEY, getDetailPref());
   sessionStorage.setItem(PARALLEL_RUN_KEY, getParallelPref() ? '1' : '0');
+  sessionStorage.setItem(INSTANCING_RUN_KEY, getInstancingPref() ? '1' : '0');
   setBenchPhase(getRunOrder()[0]);
 }
 

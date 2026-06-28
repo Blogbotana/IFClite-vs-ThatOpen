@@ -15,9 +15,11 @@ import {
   getBenchFileName,
   getBenchFileSize,
   getDetailPref,
+  getInstancingPref,
   getOrderPref,
   getParallelPref,
   getRunDetail,
+  getRunInstancing,
   getRunOrder,
   getRunParallel,
   loadBenchFile,
@@ -26,6 +28,7 @@ import {
   saveEngineResult,
   setBenchPhase,
   setDetailPref,
+  setInstancingPref,
   setOrderPref,
   setParallelPref,
   startBench,
@@ -58,7 +61,11 @@ async function createAdapter(id: EngineId, el: HTMLElement): Promise<ViewerAdapt
   const detail = getRunDetail();
   if (id === 'ifclite') {
     const { createIfcLiteAdapter } = await import(/* webpackChunkName: "viewer-ifclite" */ './lib/ifclite');
-    return createIfcLiteAdapter(el as HTMLCanvasElement, { tessellationQuality: detail, parallel: getRunParallel() });
+    return createIfcLiteAdapter(el as HTMLCanvasElement, {
+      tessellationQuality: detail,
+      parallel: getRunParallel(),
+      instancing: getRunInstancing(),
+    });
   }
   const { createThatOpenAdapter } = await import(/* webpackChunkName: "viewer-thatopen" */ './lib/thatopen');
   return createThatOpenAdapter(el as HTMLDivElement, { circleSegments: DETAIL_CIRCLE_SEGMENTS[detail] });
@@ -574,6 +581,7 @@ export default function App() {
   const [orderPref, setOrderPrefState] = useState<OrderKey>(getOrderPref);
   const [detailPref, setDetailPrefState] = useState<DetailKey>(getDetailPref);
   const [parallelPref, setParallelPrefState] = useState<boolean>(getParallelPref);
+  const [instancingPref, setInstancingPrefState] = useState<boolean>(getInstancingPref);
 
   const selectedFileName = getBenchFileName() ?? 'No IFC file selected';
   const benchSize = getBenchFileSize();
@@ -805,6 +813,11 @@ export default function App() {
     setParallelPrefState(on);
   };
 
+  const toggleInstancing = (on: boolean) => {
+    setInstancingPref(on);
+    setInstancingPrefState(on);
+  };
+
   const currentIndex = order.indexOf(phase as EngineId);
   const noteFor = (index: number): string | undefined => {
     if (phase === 'idle') return undefined;
@@ -875,6 +888,33 @@ export default function App() {
               aria-pressed={parallelPref === on}
               disabled={measuring}
               onClick={() => toggleParallel(on)}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div
+          className="order-toggle"
+          role="group"
+          aria-label="ifc-lite instancing"
+          title={
+            parallelPref
+              ? 'ifc-lite GPU instancing: repeated parts meshed once and instanced (Instanced) vs every part meshed individually (Flat).'
+              : 'Instancing only engages on the Multi-core (worker pool) path — single-thread is always Flat. Switch to Multi-core to enable.'
+          }
+        >
+          {[
+            { on: true, label: 'Instanced' },
+            { on: false, label: 'Flat' },
+          ].map(({ on, label }) => (
+            <button
+              key={label}
+              className={`order-btn${parallelPref && instancingPref === on ? ' active' : ''}`}
+              aria-pressed={parallelPref && instancingPref === on}
+              disabled={measuring || !parallelPref}
+              onClick={() => toggleInstancing(on)}
               type="button"
             >
               {label}
