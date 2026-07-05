@@ -10,7 +10,6 @@ import {
   DETAIL_CIRCLE_SEGMENTS,
   armEngine,
   clearBenchSession,
-  getBenchPhase,
   getBenchFileName,
   getBenchFileSize,
   getDetailPref,
@@ -23,7 +22,6 @@ import {
   loadBenchFile,
   loadEngineResult,
   saveEngineResult,
-  setBenchPhase,
   setDetailPref,
   setInstancingPref,
   setParallelPref,
@@ -562,13 +560,11 @@ export default function App() {
     thatopen: sThat,
   };
 
-  // Phase is fixed for the page's lifetime; transitions happen via setBenchPhase
-  // + reload. A genuine fresh visit (navigation type "navigate") must not resume a
-  // stale benchmark, so it is reset to idle; programmatic continuation reload()s.
-  // Resume whatever phase localStorage holds — a full browser restart (the manual
-  // step between engines) resumes the measured engine fresh; `done`/`idle` just
-  // show results. Starting over is picking a new file (`startBench` clears both).
-  const [phase] = useState<BenchPhase>(() => getBenchPhase());
+  // Always start idle and NEVER auto-run on mount — a run only begins when the
+  // user clicks Run / Browse (which sets `phase` in React state). Freshness comes
+  // from the user manually restarting the browser between engines; results + file
+  // persist in localStorage / IndexedDB so the comparison survives the restart.
+  const [phase, setPhase] = useState<BenchPhase>('idle');
 
   // Which single engine the next Run measures (one engine per fresh-browser run).
   const [selectedEngine, setSelectedEngineState] = useState<EngineId>(getSelectedEngine);
@@ -710,9 +706,9 @@ export default function App() {
       const result = await measure(states[phase].api, createdAdapter, def.title, file);
       if (disposed) return;
       saveEngineResult(phase, result);
-      // One engine per run — no auto-advance. Mark done; the user restarts the
-      // browser and picks the other engine for its own fresh run.
-      setBenchPhase('done');
+      // One engine per run — no auto-advance. Show the result; the user restarts
+      // the browser and picks the other engine for its own fresh run.
+      if (!disposed) setPhase('done');
     };
 
     void orchestrate();
@@ -731,7 +727,7 @@ export default function App() {
       return;
     }
     await startBench(file, selectedEngine);
-    window.location.reload();
+    setPhase(selectedEngine);
   };
 
   const selectEngine = (id: EngineId) => {
@@ -739,11 +735,11 @@ export default function App() {
     setSelectedEngineState(id);
   };
 
-  // Re-run the selected engine on the already-loaded file, keeping the other
+  // Measure the selected engine on the already-loaded file, keeping the other
   // engine's saved result. Restart the browser first for an honest measurement.
   const runSelected = () => {
     armEngine(selectedEngine);
-    window.location.reload();
+    setPhase(selectedEngine);
   };
 
   const selectDetail = (key: DetailKey) => {
