@@ -236,8 +236,9 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-/** Persist the picked file (wiping any prior results) and arm `engine` to run. */
-export async function startBench(file: File, engine: EngineId): Promise<void> {
+/** Persist the picked file and wipe any prior results. Does NOT start a run —
+ *  the user clicks Run {engine} afterwards (see `armEngine`). */
+export async function startBench(file: File): Promise<void> {
   const buffer = await file.arrayBuffer();
   const db = await openDb();
   try {
@@ -253,10 +254,6 @@ export async function startBench(file: File, engine: EngineId): Promise<void> {
   clearBenchSession();
   localStorage.setItem(NAME_KEY, file.name);
   localStorage.setItem(SIZE_KEY, String(file.size));
-  localStorage.setItem(DETAIL_RUN_KEY, getDetailPref());
-  localStorage.setItem(PARALLEL_RUN_KEY, getParallelPref() ? '1' : '0');
-  localStorage.setItem(INSTANCING_RUN_KEY, getInstancingPref() ? '1' : '0');
-  setBenchPhase(engine);
 }
 
 export async function loadBenchFile(): Promise<{ name: string; buffer: ArrayBuffer } | null> {

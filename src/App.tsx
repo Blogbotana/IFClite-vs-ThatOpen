@@ -726,20 +726,19 @@ export default function App() {
     if (!file) {
       return;
     }
-    await startBench(file, selectedEngine);
-    setPhase(selectedEngine);
+    // Load-only: store the file, wipe old results, reset to an idle empty view.
+    // The user then clicks Run {engine}. Reload is safe — we always start idle.
+    await startBench(file);
+    window.location.reload();
   };
 
-  const selectEngine = (id: EngineId) => {
-    setSelectedEngine(id);
-    setSelectedEngineState(id);
-  };
-
-  // Measure the selected engine on the already-loaded file, keeping the other
-  // engine's saved result. Restart the browser first for an honest measurement.
-  const runSelected = () => {
-    armEngine(selectedEngine);
-    setPhase(selectedEngine);
+  // Measure `engine` on the already-loaded file, keeping the other engine's saved
+  // result. Restart the browser first for an honest measurement.
+  const run = (engine: EngineId) => {
+    setSelectedEngine(engine);
+    setSelectedEngineState(engine);
+    armEngine(engine);
+    setPhase(engine);
   };
 
   const selectDetail = (key: DetailKey) => {
@@ -789,30 +788,24 @@ export default function App() {
         </label>
         <input id="ifc-file-input" type="file" accept=".ifc" onChange={onBrowse} hidden />
 
-        <div className="order-toggle" role="group" aria-label="Engine to test" title="Which engine the next Run measures">
+        <div className="order-toggle" role="group" aria-label="Run an engine">
           {ALL_ENGINES.map((id) => (
             <button
               key={id}
               type="button"
-              className={`order-btn${selectedEngine === id ? ' active' : ''}`}
-              aria-pressed={selectedEngine === id}
-              disabled={measuring}
-              onClick={() => selectEngine(id)}
+              className="browse-button"
+              disabled={measuring || !hasFile}
+              title={
+                hasFile
+                  ? `Measure ${ENGINE_DEFS[id].title} on the loaded file (restart the browser first for a fresh number)`
+                  : 'Browse for an IFC file first'
+              }
+              onClick={() => run(id)}
             >
-              {ENGINE_DEFS[id].title}
+              Run {ENGINE_DEFS[id].title}
             </button>
           ))}
         </div>
-
-        <button
-          type="button"
-          className="browse-button"
-          disabled={measuring || !hasFile}
-          title={hasFile ? `Measure ${ENGINE_DEFS[selectedEngine].title} on the loaded file` : 'Browse for an IFC file first'}
-          onClick={runSelected}
-        >
-          Run {ENGINE_DEFS[selectedEngine].title}
-        </button>
 
         <label className="detail-control" title="Curved-surface tessellation detail (ifc-lite tessellationQuality / ThatOpen CIRCLE_SEGMENTS)">
           <span className="detail-label">Detail</span>
