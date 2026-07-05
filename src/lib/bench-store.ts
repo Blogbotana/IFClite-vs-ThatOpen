@@ -1,12 +1,14 @@
-// Cross-reload benchmark state.
+// Cross-restart benchmark state.
 //
-// Each engine is measured in isolation: the page reloads between engines so each
-// starts on a fresh V8 / clean JS heap and never competes with the other for the
-// main thread. Surviving a reload requires persistence, so:
-//   - the selected IFC bytes are stored in IndexedDB (too large for sessionStorage),
-//   - the run phase + each engine's captured result live in sessionStorage
-//     (small JSON, scoped to the tab, cleared when the tab closes),
-//   - the chosen run order preference lives in localStorage (persists across tabs).
+// Each engine is measured in isolation. To get a truly fresh JS heap / GPU state
+// per engine (a page reload does NOT release the process memory a prior run left
+// behind — it accumulates and skews the second engine), the run pauses between
+// engines and waits for a FULL BROWSER RESTART, driven by the user. Surviving a
+// restart requires persistence in localStorage (sessionStorage would be wiped):
+//   - the selected IFC bytes are stored in IndexedDB (too large for localStorage),
+//   - the run phase + each engine's captured result live in localStorage, so both
+//     engines' results accumulate across manual browser restarts,
+//   - the chosen run order / detail / parallel / instancing preferences too.
 
 import type { ArtifactInfo, ViewerMetric } from '../types';
 
@@ -52,13 +54,13 @@ export interface EngineResult {
 const PHASE_KEY = 'bench.phase';
 const NAME_KEY = 'bench.fileName';
 const SIZE_KEY = 'bench.fileSize';
-const ORDER_RUN_KEY = 'bench.order'; // sessionStorage: order snapshot for the active run
+const ORDER_RUN_KEY = 'bench.order'; // localStorage: order snapshot for the active run
 const ORDER_PREF_KEY = 'bench.orderPref'; // localStorage: persistent order preference
-const DETAIL_RUN_KEY = 'bench.detail'; // sessionStorage: detail snapshot for the active run
+const DETAIL_RUN_KEY = 'bench.detail'; // localStorage: detail snapshot for the active run
 const DETAIL_PREF_KEY = 'bench.detailPref'; // localStorage: persistent detail preference
-const PARALLEL_RUN_KEY = 'bench.parallel'; // sessionStorage: parallel snapshot for the active run
+const PARALLEL_RUN_KEY = 'bench.parallel'; // localStorage: parallel snapshot for the active run
 const PARALLEL_PREF_KEY = 'bench.parallelPref'; // localStorage: persistent parallel preference
-const INSTANCING_RUN_KEY = 'bench.instancing'; // sessionStorage: instancing snapshot for the active run
+const INSTANCING_RUN_KEY = 'bench.instancing'; // localStorage: instancing snapshot for the active run
 const INSTANCING_PREF_KEY = 'bench.instancingPref'; // localStorage: persistent instancing preference
 const RESULT_KEY = (engine: EngineId) => `bench.result.${engine}`;
 
@@ -67,7 +69,7 @@ const STORE_NAME = 'files';
 const FILE_KEY = 'current';
 
 // ---------------------------------------------------------------------------
-// Run order: preference (localStorage) + active-run snapshot (sessionStorage)
+// Run order: preference (localStorage) + active-run snapshot (localStorage)
 // ---------------------------------------------------------------------------
 export function getOrderPref(): OrderKey {
   const value = localStorage.getItem(ORDER_PREF_KEY) as OrderKey | null;
@@ -78,9 +80,33 @@ export function setOrderPref(key: OrderKey): void {
   localStorage.setItem(ORDER_PREF_KEY, key);
 }
 
+// ---------------------------------------------------------------------------
+// Selected engine: which single engine the next Run measures. One engine per
+// run (each on a freshly-restarted browser); the other engine's result is kept.
+// ---------------------------------------------------------------------------
+const SELECTED_KEY = 'bench.selectedEngine';
+
+export function getSelectedEngine(): EngineId {
+  const value = localStorage.getItem(SELECTED_KEY) as EngineId | null;
+  return value && ALL_ENGINES.includes(value) ? value : 'ifclite';
+}
+
+export function setSelectedEngine(engine: EngineId): void {
+  localStorage.setItem(SELECTED_KEY, engine);
+}
+
+/** Arm a run of `engine` on the ALREADY-loaded file, KEEPING the other engine's
+ *  saved result (unlike `startBench`, which wipes both for a new file). */
+export function armEngine(engine: EngineId): void {
+  localStorage.setItem(DETAIL_RUN_KEY, getDetailPref());
+  localStorage.setItem(PARALLEL_RUN_KEY, getParallelPref() ? '1' : '0');
+  localStorage.setItem(INSTANCING_RUN_KEY, getInstancingPref() ? '1' : '0');
+  setBenchPhase(engine);
+}
+
 /** The engine order for the current run (snapshot), falling back to preference. */
 export function getRunOrder(): EngineId[] {
-  const key = (sessionStorage.getItem(ORDER_RUN_KEY) as OrderKey | null) ?? getOrderPref();
+  const key = (localStorage.getItem(ORDER_RUN_KEY) as OrderKey | null) ?? getOrderPref();
   return ORDERS[key] ?? ORDERS['ifclite-first'];
 }
 
@@ -92,7 +118,7 @@ export function nextEngine(phase: EngineId): EngineId | null {
 }
 
 // ---------------------------------------------------------------------------
-// Detail level: preference (localStorage) + active-run snapshot (sessionStorage)
+// Detail level: preference (localStorage) + active-run snapshot (localStorage)
 // ---------------------------------------------------------------------------
 export function getDetailPref(): DetailKey {
   const value = localStorage.getItem(DETAIL_PREF_KEY) as DetailKey | null;
@@ -105,7 +131,7 @@ export function setDetailPref(key: DetailKey): void {
 
 /** The detail level for the current run (snapshot), falling back to preference. */
 export function getRunDetail(): DetailKey {
-  const value = sessionStorage.getItem(DETAIL_RUN_KEY) as DetailKey | null;
+  const value = localStorage.getItem(DETAIL_RUN_KEY) as DetailKey | null;
   return value && DETAILS.includes(value) ? value : getDetailPref();
 }
 
@@ -125,7 +151,7 @@ export function setParallelPref(on: boolean): void {
 
 /** Whether the current run uses the parallel worker pool (snapshot). */
 export function getRunParallel(): boolean {
-  const value = sessionStorage.getItem(PARALLEL_RUN_KEY);
+  const value = localStorage.getItem(PARALLEL_RUN_KEY);
   return value === null ? getParallelPref() : value === '1';
 }
 
@@ -145,36 +171,36 @@ export function setInstancingPref(on: boolean): void {
 
 /** Whether the current run uses GPU instancing (snapshot). */
 export function getRunInstancing(): boolean {
-  const value = sessionStorage.getItem(INSTANCING_RUN_KEY);
+  const value = localStorage.getItem(INSTANCING_RUN_KEY);
   return value === null ? getInstancingPref() : value === '1';
 }
 
 // ---------------------------------------------------------------------------
-// sessionStorage: phase, file name, per-engine results
+// localStorage: phase, file name, per-engine results
 // ---------------------------------------------------------------------------
 export function getBenchPhase(): BenchPhase {
-  return (sessionStorage.getItem(PHASE_KEY) as BenchPhase | null) ?? 'idle';
+  return (localStorage.getItem(PHASE_KEY) as BenchPhase | null) ?? 'idle';
 }
 
 export function setBenchPhase(phase: BenchPhase): void {
-  sessionStorage.setItem(PHASE_KEY, phase);
+  localStorage.setItem(PHASE_KEY, phase);
 }
 
 export function getBenchFileName(): string | null {
-  return sessionStorage.getItem(NAME_KEY);
+  return localStorage.getItem(NAME_KEY);
 }
 
 export function getBenchFileSize(): number | null {
-  const raw = sessionStorage.getItem(SIZE_KEY);
+  const raw = localStorage.getItem(SIZE_KEY);
   return raw ? Number(raw) : null;
 }
 
 export function saveEngineResult(engine: EngineId, result: EngineResult): void {
-  sessionStorage.setItem(RESULT_KEY(engine), JSON.stringify(result));
+  localStorage.setItem(RESULT_KEY(engine), JSON.stringify(result));
 }
 
 export function loadEngineResult(engine: EngineId): EngineResult | null {
-  const raw = sessionStorage.getItem(RESULT_KEY(engine));
+  const raw = localStorage.getItem(RESULT_KEY(engine));
   if (!raw) {
     return null;
   }
@@ -186,14 +212,14 @@ export function loadEngineResult(engine: EngineId): EngineResult | null {
 }
 
 export function clearBenchSession(): void {
-  sessionStorage.removeItem(PHASE_KEY);
-  sessionStorage.removeItem(NAME_KEY);
-  sessionStorage.removeItem(SIZE_KEY);
-  sessionStorage.removeItem(ORDER_RUN_KEY);
-  sessionStorage.removeItem(DETAIL_RUN_KEY);
-  sessionStorage.removeItem(PARALLEL_RUN_KEY);
-  sessionStorage.removeItem(INSTANCING_RUN_KEY);
-  ALL_ENGINES.forEach((id) => sessionStorage.removeItem(RESULT_KEY(id)));
+  localStorage.removeItem(PHASE_KEY);
+  localStorage.removeItem(NAME_KEY);
+  localStorage.removeItem(SIZE_KEY);
+  localStorage.removeItem(ORDER_RUN_KEY);
+  localStorage.removeItem(DETAIL_RUN_KEY);
+  localStorage.removeItem(PARALLEL_RUN_KEY);
+  localStorage.removeItem(INSTANCING_RUN_KEY);
+  ALL_ENGINES.forEach((id) => localStorage.removeItem(RESULT_KEY(id)));
 }
 
 // ---------------------------------------------------------------------------
@@ -210,8 +236,8 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-/** Persist the picked file, snapshot the order, and arm the first engine. */
-export async function startBench(file: File): Promise<void> {
+/** Persist the picked file (wiping any prior results) and arm `engine` to run. */
+export async function startBench(file: File, engine: EngineId): Promise<void> {
   const buffer = await file.arrayBuffer();
   const db = await openDb();
   try {
@@ -225,13 +251,12 @@ export async function startBench(file: File): Promise<void> {
     db.close();
   }
   clearBenchSession();
-  sessionStorage.setItem(NAME_KEY, file.name);
-  sessionStorage.setItem(SIZE_KEY, String(file.size));
-  sessionStorage.setItem(ORDER_RUN_KEY, getOrderPref());
-  sessionStorage.setItem(DETAIL_RUN_KEY, getDetailPref());
-  sessionStorage.setItem(PARALLEL_RUN_KEY, getParallelPref() ? '1' : '0');
-  sessionStorage.setItem(INSTANCING_RUN_KEY, getInstancingPref() ? '1' : '0');
-  setBenchPhase(getRunOrder()[0]);
+  localStorage.setItem(NAME_KEY, file.name);
+  localStorage.setItem(SIZE_KEY, String(file.size));
+  localStorage.setItem(DETAIL_RUN_KEY, getDetailPref());
+  localStorage.setItem(PARALLEL_RUN_KEY, getParallelPref() ? '1' : '0');
+  localStorage.setItem(INSTANCING_RUN_KEY, getInstancingPref() ? '1' : '0');
+  setBenchPhase(engine);
 }
 
 export async function loadBenchFile(): Promise<{ name: string; buffer: ArrayBuffer } | null> {

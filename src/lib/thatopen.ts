@@ -269,6 +269,16 @@ export function createThatOpenAdapter(
       const renderReadyAt = await new Promise<number>((resolve) => {
         requestAnimationFrame(() => resolve(performance.now()));
       });
+      // Symmetric with ifc-lite's [timing2]: split conversion (web-ifc parse +
+      // geometry + fragment build) from gpu_drain (the frame waiting for WebGPU to
+      // finish uploading the fragments). ThatOpen uploads instanced fragments, so
+      // gpu_drain should be tiny vs ifc-lite's per-mesh buffer flood.
+      console.log(
+        `[timing-tho] conversion=${(conversionEnd - start).toFixed(0)}ms ` +
+          `gpu_drain=${(renderReadyAt - conversionEnd).toFixed(0)}ms | ` +
+          `render_ready=${(renderReadyAt - start).toFixed(0)}ms ` +
+          `fragments=${fragments.list.size}`,
+      );
       // Model is on screen — stop the open-timer here, symmetric with ifc-lite,
       // so the fragment-buffer dump + persist below don't inflate "Open time".
       context.onReady?.();

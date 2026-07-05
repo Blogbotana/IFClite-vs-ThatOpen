@@ -1,36 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getPersistedArtifactUrl, readPersistedArtifactBytes } from './lib/file-system';
+import { getPersistedArtifactUrl } from './lib/file-system';
 import {
   type BenchPhase,
   type DetailKey,
   type EngineId,
   type EngineResult,
-  type OrderKey,
   ALL_ENGINES,
   DETAILS,
   DETAIL_CIRCLE_SEGMENTS,
-  ORDERS,
+  armEngine,
   clearBenchSession,
   getBenchPhase,
   getBenchFileName,
   getBenchFileSize,
   getDetailPref,
   getInstancingPref,
-  getOrderPref,
   getParallelPref,
   getRunDetail,
   getRunInstancing,
-  getRunOrder,
   getRunParallel,
+  getSelectedEngine,
   loadBenchFile,
   loadEngineResult,
-  nextEngine,
   saveEngineResult,
   setBenchPhase,
   setDetailPref,
   setInstancingPref,
-  setOrderPref,
   setParallelPref,
+  setSelectedEngine,
   startBench,
 } from './lib/bench-store';
 import type {
@@ -568,22 +565,19 @@ export default function App() {
   // Phase is fixed for the page's lifetime; transitions happen via setBenchPhase
   // + reload. A genuine fresh visit (navigation type "navigate") must not resume a
   // stale benchmark, so it is reset to idle; programmatic continuation reload()s.
-  const [phase] = useState<BenchPhase>(() => {
-    const raw = getBenchPhase();
-    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-    if (nav?.type === 'navigate' && raw !== 'idle') {
-      clearBenchSession();
-      return 'idle';
-    }
-    return raw;
-  });
+  // Resume whatever phase localStorage holds — a full browser restart (the manual
+  // step between engines) resumes the measured engine fresh; `done`/`idle` just
+  // show results. Starting over is picking a new file (`startBench` clears both).
+  const [phase] = useState<BenchPhase>(() => getBenchPhase());
 
-  const [orderPref, setOrderPrefState] = useState<OrderKey>(getOrderPref);
+  // Which single engine the next Run measures (one engine per fresh-browser run).
+  const [selectedEngine, setSelectedEngineState] = useState<EngineId>(getSelectedEngine);
   const [detailPref, setDetailPrefState] = useState<DetailKey>(getDetailPref);
   const [parallelPref, setParallelPrefState] = useState<boolean>(getParallelPref);
   const [instancingPref, setInstancingPrefState] = useState<boolean>(getInstancingPref);
 
   const selectedFileName = getBenchFileName() ?? 'No IFC file selected';
+  const hasFile = getBenchFileName() !== null;
   const benchSize = getBenchFileSize();
   const selectedFileSize = benchSize !== null ? formatBytes(benchSize) : null;
 
@@ -595,16 +589,14 @@ export default function App() {
     return null;
   })();
 
-  // Display / run order: while idle follow the live preference, otherwise the
-  // snapshot taken for the active run.
-  const order: EngineId[] = phase === 'idle' ? ORDERS[orderPref] : getRunOrder();
+  // The engine shown on the single canvas: the one being measured (or just
+  // measured) while a run is live, else the currently-selected engine.
+  const activeEngine: EngineId = phase === 'idle' || phase === 'done' ? selectedEngine : phase;
   const measuring = phase !== 'idle' && phase !== 'done';
 
   useEffect(() => {
     let disposed = false;
     let createdAdapter: ViewerAdapter | null = null;
-    // Adapters created for the end-of-run "show all models" reopen (not measured).
-    const reopenedAdapters: ViewerAdapter[] = [];
 
     const measure = async (api: ViewerApi, adapter: ViewerAdapter, title: string, file: { name: string; buffer: ArrayBuffer }): Promise<EngineResult> => {
       const logs: string[] = [];
@@ -692,24 +684,15 @@ export default function App() {
     };
 
     const orchestrate = async () => {
-      if (phase === 'idle') {
-        return;
+      // Always surface previously-saved results from localStorage (the OTHER
+      // engine, or a prior run of this one) so the comparison table stays filled.
+      for (const id of ALL_ENGINES) {
+        if (id === phase) continue; // the live engine (if any) is measured below
+        const stored = loadEngineResult(id);
+        if (stored) states[id].api.hydrate(stored);
       }
-      if (phase === 'done') {
-        for (const id of ALL_ENGINES) {
-          const stored = loadEngineResult(id);
-          if (stored) states[id].api.hydrate(stored);
-        }
-        return;
-      }
-
-      // Restore engines already measured on previous pages (those before this one).
-      const runOrder = getRunOrder();
-      const currentIndex = runOrder.indexOf(phase);
-      for (let i = 0; i < currentIndex; i += 1) {
-        const stored = loadEngineResult(runOrder[i]);
-        if (stored) states[runOrder[i]].api.hydrate(stored);
-      }
+      // idle / done: nothing to measure — just show the saved results above.
+      if (phase === 'idle' || phase === 'done') return;
 
       const def = ENGINE_DEFS[phase];
       const el = elRefs[phase].current;
@@ -727,55 +710,9 @@ export default function App() {
       const result = await measure(states[phase].api, createdAdapter, def.title, file);
       if (disposed) return;
       saveEngineResult(phase, result);
-
-      const next = nextEngine(phase);
-      if (next) {
-        setBenchPhase(next);
-        window.setTimeout(() => window.location.reload(), 700);
-      } else {
-        // Last engine measured. Now render every OTHER engine's model too,
-        // reopened from its persisted geometry cache (ifc-lite → model.cache,
-        // ThatOpen → .frag). This runs AFTER all results are saved, so it never
-        // touches the measured timings — it's purely the final side-by-side view.
-        for (const id of getRunOrder()) {
-          if (id === phase || disposed) continue;
-          const stored = loadEngineResult(id);
-          const artifact = stored?.artifacts.find((a) =>
-            id === 'thatopen' ? a.name.endsWith('.frag') : a.name === 'model.cache',
-          );
-          const otherEl = elRefs[id].current;
-          if (!stored || !artifact || !otherEl) continue;
-          try {
-            states[id].api.setProgress('Re-opening from cache', 10);
-            const bytes = await readPersistedArtifactBytes(artifact.path);
-            if (!bytes || disposed) continue;
-            const otherAdapter = await createAdapter(id, otherEl);
-            reopenedAdapters.push(otherAdapter);
-            adapterRefs[id].current = otherAdapter;
-            await otherAdapter.init();
-            if (disposed) break;
-            await otherAdapter.reopen?.(
-              {
-                file: new File([file.buffer], file.name),
-                buffer: file.buffer,
-                onProgress: ({ phase: p, percent }) => !disposed && states[id].api.setProgress(p, percent),
-                onLog: (m) => !disposed && states[id].api.appendLog(m),
-                onMetrics: () => {},
-                onArtifacts: () => {},
-                onTree: () => {},
-                onEntityIndex: () => {},
-                onSelected: () => {},
-              },
-              bytes,
-            );
-          } catch (e) {
-            if (!disposed) {
-              states[id].api.appendLog(`${id}: final reopen failed: ${e instanceof Error ? e.message : String(e)}`);
-            }
-          }
-        }
-        setBenchPhase('done');
-      }
+      // One engine per run — no auto-advance. Mark done; the user restarts the
+      // browser and picks the other engine for its own fresh run.
+      setBenchPhase('done');
     };
 
     void orchestrate();
@@ -783,7 +720,6 @@ export default function App() {
     return () => {
       disposed = true;
       createdAdapter?.dispose();
-      reopenedAdapters.forEach((a) => a.dispose());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
@@ -794,13 +730,20 @@ export default function App() {
     if (!file) {
       return;
     }
-    await startBench(file);
+    await startBench(file, selectedEngine);
     window.location.reload();
   };
 
-  const selectOrder = (key: OrderKey) => {
-    setOrderPref(key);
-    setOrderPrefState(key);
+  const selectEngine = (id: EngineId) => {
+    setSelectedEngine(id);
+    setSelectedEngineState(id);
+  };
+
+  // Re-run the selected engine on the already-loaded file, keeping the other
+  // engine's saved result. Restart the browser first for an honest measurement.
+  const runSelected = () => {
+    armEngine(selectedEngine);
+    window.location.reload();
   };
 
   const selectDetail = (key: DetailKey) => {
@@ -818,22 +761,29 @@ export default function App() {
     setInstancingPrefState(on);
   };
 
-  const currentIndex = order.indexOf(phase as EngineId);
-  const noteFor = (index: number): string | undefined => {
-    if (phase === 'idle') return undefined;
-    if (phase === 'done') return 'Measured in isolation — see comparison below';
-    if (index < currentIndex) return 'Measured in isolation — see comparison below';
-    if (index > currentIndex) return 'Queued — runs after the page reloads';
-    return undefined;
+  // Wipe every persisted engine result + run state (localStorage) and reset the
+  // page to an empty comparison, ready for a fresh set of runs.
+  const clearMetrics = () => {
+    clearBenchSession();
+    window.location.reload();
   };
 
   const measuringDef = measuring ? ENGINE_DEFS[phase as EngineId] : null;
   const statusLabel =
-    phase === 'done' ? 'Benchmark complete' : measuringDef ? `Measuring ${measuringDef.title}…` : null;
+    phase === 'done'
+      ? 'Measured — restart the browser to test the other engine'
+      : measuringDef
+        ? `Measuring ${measuringDef.title}…`
+        : null;
 
-  const orderedDefs = order.map((id) => ENGINE_DEFS[id]);
-  const compareEngines: CompareEngine[] = orderedDefs.map((def) => ({ def, state: states[def.id].state }));
-  const gridStyle = { ['--cols' as string]: String(orderedDefs.length) } as React.CSSProperties;
+  // One canvas shows the active engine; the comparison table shows BOTH engines'
+  // results, hydrated from localStorage (so the other engine's stays visible).
+  const activeDef = ENGINE_DEFS[activeEngine];
+  const compareEngines: CompareEngine[] = ALL_ENGINES.map((id) => ({
+    def: ENGINE_DEFS[id],
+    state: states[id].state,
+  }));
+  const gridStyle = { ['--cols' as string]: '1' } as React.CSSProperties;
 
   return (
     <main className="app-shell">
@@ -843,20 +793,30 @@ export default function App() {
         </label>
         <input id="ifc-file-input" type="file" accept=".ifc" onChange={onBrowse} hidden />
 
-        <div className="order-toggle" role="group" aria-label="Benchmark order" title="Which engine runs first">
-          {(['ifclite-first', 'thatopen-first'] as OrderKey[]).map((key) => (
+        <div className="order-toggle" role="group" aria-label="Engine to test" title="Which engine the next Run measures">
+          {ALL_ENGINES.map((id) => (
             <button
-              key={key}
+              key={id}
               type="button"
-              className={`order-btn${orderPref === key ? ' active' : ''}`}
-              aria-pressed={orderPref === key}
+              className={`order-btn${selectedEngine === id ? ' active' : ''}`}
+              aria-pressed={selectedEngine === id}
               disabled={measuring}
-              onClick={() => selectOrder(key)}
+              onClick={() => selectEngine(id)}
             >
-              {key === 'ifclite-first' ? 'IFClite first' : 'ThatOpen first'}
+              {ENGINE_DEFS[id].title}
             </button>
           ))}
         </div>
+
+        <button
+          type="button"
+          className="browse-button"
+          disabled={measuring || !hasFile}
+          title={hasFile ? `Measure ${ENGINE_DEFS[selectedEngine].title} on the loaded file` : 'Browse for an IFC file first'}
+          onClick={runSelected}
+        >
+          Run {ENGINE_DEFS[selectedEngine].title}
+        </button>
 
         <label className="detail-control" title="Curved-surface tessellation detail (ifc-lite tessellationQuality / ThatOpen CIRCLE_SEGMENTS)">
           <span className="detail-label">Detail</span>
@@ -928,19 +888,45 @@ export default function App() {
           {fileSchema && <span className="file-chip">{fileSchema}</span>}
           {statusLabel && <span className={`file-status${phase === 'done' ? ' done' : ''}`}>{statusLabel}</span>}
         </div>
+
+        <button
+          type="button"
+          className="order-btn"
+          disabled={measuring}
+          title="Wipe all saved benchmark results (localStorage) and reset the comparison"
+          onClick={clearMetrics}
+        >
+          Clear metrics
+        </button>
       </header>
 
+      <div
+        role="note"
+        style={{
+          margin: '0 8px 8px',
+          padding: '8px 12px',
+          borderRadius: '8px',
+          background: 'rgba(180,83,9,0.12)',
+          color: '#b45309',
+          fontSize: '13px',
+          lineHeight: 1.45,
+        }}
+      >
+        ⚠️ For an honest, real measurement, <strong>fully restart the browser before each
+        engine</strong> (close every window — a plain reload keeps leftover heap/GPU memory and
+        inflates the number). Results persist across restarts (localStorage); use{' '}
+        <strong>Clear metrics</strong> to reset.
+      </div>
+
       <section className="comparison-grid" style={gridStyle}>
-        {orderedDefs.map((def, index) => (
-          <ViewerPanel
-            key={def.id}
-            def={def}
-            state={states[def.id].state}
-            elRef={elRefs[def.id]}
-            onReset={() => void adapterRefs[def.id].current?.reset()}
-            note={noteFor(index)}
-          />
-        ))}
+        <ViewerPanel
+          key={activeDef.id}
+          def={activeDef}
+          state={states[activeDef.id].state}
+          elRef={elRefs[activeDef.id]}
+          onReset={() => void adapterRefs[activeDef.id].current?.reset()}
+          note={statusLabel ?? undefined}
+        />
       </section>
 
       <Dock engines={compareEngines} />

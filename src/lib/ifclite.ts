@@ -534,6 +534,15 @@ export function createIfcLiteAdapter(
 
       let meshCount = 0;
       let firstBatchAt: number | null = null;
+      // Batch-loop instrumentation: where does the wall time go — waiting on the
+      // WASM workers, expanding instanced shards on the CPU, or the WebGPU upload?
+      let tWaitOnWasm = 0; // idle main-thread time between finishing one batch and the next arriving
+      let tMaterializeShards = 0; // materializeInstancedShards (CPU expand of don't-bake shards)
+      let tUploadMeshes = 0; // renderer.addMeshes (WebGPU upload)
+      let batchCount = 0;
+      let flatMeshTotal = 0; // meshes that arrived already-flat
+      let shardMeshTotal = 0; // meshes reconstructed from instanced shards
+      let lastBatchDoneAt = performance.now();
       // Multi-core WASM (Web Worker pool) vs single-thread streaming. Both yield
       // the same StreamingGeometryEvent, so the batch loop below is identical.
       const geometryStream = options?.parallel
@@ -546,16 +555,23 @@ export function createIfcLiteAdapter(
             context.onProgress({ phase: 'Preparing geometry stream', percent: 10 });
             break;
           case 'batch': {
+            const batchArrivedAt = performance.now();
+            tWaitOnWasm += batchArrivedAt - lastBatchDoneAt;
             if (firstBatchAt === null) {
-              firstBatchAt = performance.now();
+              firstBatchAt = batchArrivedAt;
             }
             // Flat (unique + transparent) meshes upload directly.
             const batchMeshes = event.meshes.slice();
+            flatMeshTotal += event.meshes.length;
             // Repeated opaque occurrences arrive as instanced shards; materialise
             // them so the flat renderer can draw them (kernel still meshed each
             // template once — that's the instancing win we're measuring).
             if (event.instancedShards?.length) {
-              batchMeshes.push(...materializeInstancedShards(event.instancedShards));
+              const tMat = performance.now();
+              const shardMeshes = materializeInstancedShards(event.instancedShards);
+              tMaterializeShards += performance.now() - tMat;
+              shardMeshTotal += shardMeshes.length;
+              batchMeshes.push(...shardMeshes);
             }
             // Drop void/space cutter geometry (esp. IfcOpeningElement) — the
             // kernel emits it, but rendering it fills every hole and makes cut
@@ -565,7 +581,11 @@ export function createIfcLiteAdapter(
             );
             latestMeshes.push(...renderMeshes);
             meshCount += renderMeshes.length;
+            const tUp = performance.now();
             renderer.addMeshes(renderMeshes, true);
+            tUploadMeshes += performance.now() - tUp;
+            batchCount += 1;
+            lastBatchDoneAt = performance.now();
             context.onProgress({
               phase: `Rendering geometry (${meshCount.toLocaleString()} meshes)`,
               percent: Math.min(90, 45 + Math.log10(Math.max(10, event.totalSoFar || meshCount)) * 12),
@@ -577,15 +597,37 @@ export function createIfcLiteAdapter(
             latestCoordinateInfo = event.coordinateInfo ?? latestCoordinateInfo;
             renderer.fitToView();
             context.onLog(`IFClite geometry complete: ${event.totalMeshes.toLocaleString()} meshes`);
+            // Where the wall time actually went. `wait` = main thread idle waiting
+            // on the WASM workers (engine-bound); `materialize` + `upload` = the
+            // consumer-side cost this app pays to expand don't-bake shards back to
+            // flat and push them to WebGPU (thrown-away instancing win).
+            console.log(
+              `[timing] batches=${batchCount} ` +
+                `wait_on_wasm=${tWaitOnWasm.toFixed(0)}ms ` +
+                `materialize_shards=${tMaterializeShards.toFixed(0)}ms ` +
+                `upload_webgpu=${tUploadMeshes.toFixed(0)}ms | ` +
+                `flat_meshes=${flatMeshTotal} shard_meshes=${shardMeshTotal}`,
+            );
             break;
         }
       }
 
+      const geomDoneAt = performance.now();
       latestStore = await storePromise;
       const completedAt = performance.now();
       const renderReadyAt = await new Promise<number>((resolve) => {
         requestAnimationFrame(() => resolve(performance.now()));
       });
+      // The two costs my in-loop [timing] could NOT see:
+      //  • store_parse = `await parseColumnar` blocking past geometry (JS metadata parse)
+      //  • gpu_drain   = the frame (RAF) waiting for WebGPU to finish the queued buffer
+      //    uploads for all meshes — addMeshes only QUEUES; this is the real GPU cost.
+      console.log(
+        `[timing2] geometry_stream=${(geomDoneAt - start).toFixed(0)}ms ` +
+          `store_parse_extra=${(completedAt - geomDoneAt).toFixed(0)}ms ` +
+          `gpu_drain=${(renderReadyAt - completedAt).toFixed(0)}ms | ` +
+          `render_ready=${(renderReadyAt - start).toFixed(0)}ms`,
+      );
       // Model is on screen — stop the open-timer here. The BOS/parquet export
       // below re-serializes all geometry (heavy on large models) and is NOT
       // part of "opening" — ThatOpen likewise dumps its already-built buffer
