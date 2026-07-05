@@ -697,6 +697,12 @@ export default function App() {
       const file = await loadBenchFile();
       if (!file || disposed) return;
 
+      // Dispose any adapter left from a prior run so we don't stack GPU contexts
+      // on the canvas. The just-finished model stays on screen until the NEXT run.
+      ALL_ENGINES.forEach((id) => {
+        adapterRefs[id].current?.dispose();
+        adapterRefs[id].current = null;
+      });
       createdAdapter = await createAdapter(phase, el);
       adapterRefs[phase].current = createdAdapter;
       await createdAdapter.init();
@@ -714,8 +720,10 @@ export default function App() {
     void orchestrate();
 
     return () => {
+      // Only stop async continuation — do NOT dispose the adapter, so the rendered
+      // model stays on screen after the run finishes. The next run disposes the
+      // previous adapter (above) before creating its own.
       disposed = true;
-      createdAdapter?.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
