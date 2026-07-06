@@ -772,12 +772,7 @@ export default function App() {
   };
 
   const measuringDef = measuring ? ENGINE_DEFS[phase as EngineId] : null;
-  const statusLabel =
-    phase === 'done'
-      ? 'Measured — restart the browser to test the other engine'
-      : measuringDef
-        ? `Measuring ${measuringDef.title}…`
-        : null;
+  const statusLabel = measuringDef ? `Measuring ${measuringDef.title}…` : null;
 
   // One canvas shows the active engine; the comparison table shows BOTH engines'
   // results, hydrated from localStorage (so the other engine's stays visible).
