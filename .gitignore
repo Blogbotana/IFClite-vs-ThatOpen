@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Locally built @ifc-lite/wasm tarball for the npm "overrides" pin (unpublished engine work).
+# Rebuilt with `npm pack` in ifc-lite/packages/wasm — never committed.
+.ifc-lite-local/
