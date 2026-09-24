@@ -9,28 +9,28 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@ifc-lite/cache": "^2.2.1",
-    "@ifc-lite/export": "^2.6.0",
-    "@ifc-lite/geometry": "^3.3.0",
-    "@ifc-lite/parser": "^3.10.1",
-    "@ifc-lite/renderer": "^1.39.0",
-    "@thatopen/components": "^3.4.6",
-    "@thatopen/components-front": "^3.4.3",
-    "@thatopen/fragments": "^3.4.6",
-    "apache-arrow": "latest",
-    "parquet-wasm": "latest",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
-    "three": "^0.185.1",
-    "web-ifc": "^0.0.77"
+    "@ifc-lite/cache": "^3.5.1",
+    "@ifc-lite/export": "^4.5.0",
+    "@ifc-lite/geometry": "^7.5.0",
+    "@ifc-lite/parser": "^8.0.0",
+    "@ifc-lite/renderer": "^3.2.0",
+    "@thatopen/components": "^3.4.8",
+    "@thatopen/components-front": "^3.4.4",
+    "@thatopen/fragments": "^3.4.7",
+    "apache-arrow": "^21.2.0",
+    "parquet-wasm": "^0.8.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "three": "^0.186.0",
+    "web-ifc": "^0.0.78"
   },
   "devDependencies": {
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "@types/three": "^0.185.1",
-    "@vitejs/plugin-react": "^6.0.3",
-    "typescript": "^5.9.3",
-    "vite": "~8.1.5",
-    "vite-plugin-wasm": "^3.4.1"
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.186.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vite-plugin-wasm": "^3.6.0"
   }
 }

@@ -37,14 +37,14 @@ A side-by-side runtime comparison of two fully client-side IFC pipelines, built 
 | `@thatopen/components-front` | `PostproductionRenderer` (Three.js + post-processing) |
 | `@thatopen/fragments` | Fragment streaming worker and `.frag` binary format |
 | `web-ifc` | WASM IFC parser used internally by ThatOpen |
-| `three` | Three.js r185 — scene graph for the ThatOpen side |
+| `three` | Three.js r186 — scene graph for the ThatOpen side |
 
 ### Dev/build tooling
 
 | Package | Role |
 |---------|------|
 | Vite 8 + `vite-plugin-wasm` | Dev server and production bundler; WASM asset handling |
-| TypeScript 5.8 | Type checking across all source |
+| TypeScript 7 | Type checking across all source |
 | `@vitejs/plugin-react` | React fast-refresh in development |
 
 ## Getting started
