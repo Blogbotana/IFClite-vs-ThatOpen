@@ -42,6 +42,7 @@ function copyThatOpenAssets() {
   for (const file of ['web-ifc.wasm', 'web-ifc-mt.wasm']) {
     copyFileSync(resolve(root, 'node_modules/web-ifc', file), resolve(wasmDest, file));
   }
+  copyFileSync(resolve(root, 'node_modules/coi-serviceworker/coi-serviceworker.js'), resolve(pub, 'coi-serviceworker.js'));
   copyFileSync(
     resolve(root, 'node_modules/@thatopen/fragments/dist/Worker/worker.mjs'),
     resolve(pub, 'thatopen-worker.mjs'),
@@ -53,7 +54,9 @@ try {
   console.warn('[vite] Failed to copy ThatOpen assets:', (e as Error).message);
 }
 
+// GitHub Pages serves the site from /<repo>/; the workflow sets BASE_PATH.
 export default defineConfig({
+  base: process.env.BASE_PATH ?? '/',
   plugins: [stripIfcLiteBrokenSourceMapComments(), react(), wasm()],
   assetsInclude: ['**/*.wasm'],
   optimizeDeps: {
