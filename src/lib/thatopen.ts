@@ -146,7 +146,7 @@ export function createThatOpenAdapter(
       (controls as any).mouseButtons.middle = 2;
       // Use the locally-served worker (copied to public/ by vite.config.ts) so
       // it is same-origin and never blocked by COEP or network issues.
-      fragments.init('/thatopen-worker.mjs');
+      fragments.init(`${import.meta.env.BASE_URL}thatopen-worker.mjs`);
       controls.addEventListener('update', () => fragments.core.update());
       fragments.list.onItemSet.add(({ value: model }) => {
         currentModel = model;
@@ -162,7 +162,7 @@ export function createThatOpenAdapter(
       await ifcLoader.setup({
         autoSetWasm: false,
         wasm: {
-          path: '/wasm/',
+          path: `${import.meta.env.BASE_URL}wasm/`,
           absolute: true,
         },
       });

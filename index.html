@@ -1,8 +1,11 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <!-- GitHub Pages cannot send COOP/COEP; this service worker adds them (needed for SharedArrayBuffer / multi-core). -->
+    <script>window.coi = { coepCredentialless: () => true };</script>
+    <script src="%BASE_URL%coi-serviceworker.js"></script>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ifclite-vs-thatopen</title>
   </head>
