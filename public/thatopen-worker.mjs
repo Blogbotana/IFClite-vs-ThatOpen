@@ -13726,8 +13726,8 @@ class MultithreadingHelper {
    */
   static _seq = 0;
   /**
-   * Last seq dispatched. Snapshot at `forceUpdateFinish` call time
-   * to know which seq must settle before we can resolve.
+   * Last seq dispatched, by any FragmentsModels instance. Not a fence
+   * target: most requests are never answered by a FINISH (#341).
    */
   static get lastDispatchedSeq() {
     return MultithreadingHelper._seq;
@@ -27689,7 +27689,7 @@ class ShellConstructor {
       const indices = this.getIndices(shell, id);
       this.computeNormalsAvg(shell, indices, id);
       this.constructProfile(id, shell, indices, data);
-      this.manageMemory(shell, meshData);
+      if (id < count - 1) this.manageMemory(shell, meshData);
     }
   }
   constructFaceX(indices, data, id) {
@@ -31765,6 +31765,7 @@ class VirtualTilesController {
   _items;
   _materials;
   _modelId;
+  _model;
   _lastView = {
     rotation: new Vector3(),
     location: new Vector3()
@@ -31832,6 +31833,7 @@ class VirtualTilesController {
   _lodMode = LodMode.DEFAULT;
   constructor(data) {
     this._modelId = data.modelId;
+    this._model = data.model;
     this._boxes = data.boxes;
     this._items = data.items;
     this._materials = data.materials;
@@ -32467,7 +32469,7 @@ class VirtualTilesController {
     const tileIds = this.getTileIds(id, lod);
     if (tileIds === void 0) return;
     MiscHelper.forEach(tileIds, (tileId) => {
-      this.updateTile(tileId, id, high, vis);
+      this.updateTile(tileId, id, vis ? high : 0, vis && high === 0);
     });
   }
   getTileIds(sample, lod) {
@@ -32907,12 +32909,33 @@ class VirtualTilesController {
       normals: tile.normalBuffer,
       faceIds,
       itemIds: tile.ids,
+      localIds: this.getTileLocalIds(tile),
       material: tile.materialId,
       matrix: this._temp.matrix.clone(),
       aabb: tile.box.clone(),
       currentLod: tile.lod
     });
     this.updateMemoryOnTileLoad(tile);
+  }
+  /**
+   * The localIds of the items a tile holds, each once. Sent with the
+   * tile's CREATE so the main thread can keep `FragmentsModel.visibleItems`
+   * without decoding the `id` attribute, which holds internal itemIds.
+   */
+  getTileLocalIds(tile) {
+    const localIds = /* @__PURE__ */ new Set();
+    let lastItemId = -1;
+    for (const [sample] of tile.sampleLocation) {
+      const itemId = this.itemId(sample);
+      if (itemId === lastItemId) continue;
+      lastItemId = itemId;
+      const localIdIndex = this.meshes.meshesItems(itemId);
+      if (localIdIndex === null) continue;
+      const localId = this._model.localIds(localIdIndex);
+      if (localId === null) continue;
+      localIds.add(localId);
+    }
+    return Uint32Array.from(localIds);
   }
   getFaceIds(tile) {
     const tempColor = new Color();
@@ -32963,6 +32986,18 @@ class VirtualMaterialController {
   // it was allocated by a highlight and can be reclaimed once no item
   // references it any more.
   _modelMaterialCount = 0;
+  // Samples grouped by the item they belong to, built on the first call to
+  // getItemsMaterialDefinition. `_sampleStarts[item]` to
+  // `_sampleStarts[item + 1]` is the range of that item in `_sampleIds`
+  // (ascending) and `_sampleMaterials` (the material of each of them).
+  // A loaded model never changes its samples: edits are kept as requests and
+  // built into a separate delta model, which has its own controller. The
+  // index still remembers the buffer it was built from and is rebuilt if
+  // another one is passed.
+  _indexedBuffer = null;
+  _sampleStarts = new Uint32Array(0);
+  _sampleIds = new Uint32Array(0);
+  _sampleMaterials = new Uint32Array(0);
   constructor(modelId, onTransfer) {
     this._modelId = modelId;
     this._onTransfer = onTransfer;
@@ -32996,29 +33031,94 @@ class VirtualMaterialController {
     this.transferMaterialData(materialDefinitions);
     return ids;
   }
-  getItemsMaterialDefinition(model, indices, localIds) {
+  getItemsMaterialDefinition(model, indices, _localIds) {
     const result = [];
     const meshes = model.meshes();
     if (!meshes) return [];
+    this.indexSamples(model, meshes);
+    const starts = this._sampleStarts;
+    let count = 0;
+    for (const itemIndex of indices) {
+      const start = starts[itemIndex];
+      const end = starts[itemIndex + 1];
+      if (start === void 0 || end === void 0) continue;
+      count += end - start;
+    }
+    const found = new Uint32Array(count);
+    let next = 0;
+    for (const itemIndex of indices) {
+      const start = starts[itemIndex];
+      const end = starts[itemIndex + 1];
+      if (start === void 0 || end === void 0) continue;
+      for (let i = start; i < end; i++) found[next++] = i;
+    }
+    const sampleIds = this._sampleIds;
+    let sorted = true;
+    for (let i = 1; i < count; i++) {
+      if (sampleIds[found[i - 1]] > sampleIds[found[i]]) {
+        sorted = false;
+        break;
+      }
+    }
+    if (!sorted) found.sort((a, b) => sampleIds[a] - sampleIds[b]);
+    const sampleMaterials = this._sampleMaterials;
     const map = /* @__PURE__ */ new Map();
-    for (const [index, itemIndex] of indices.entries()) {
-      const sample = meshes.samples(itemIndex);
-      if (!sample) continue;
-      const materialIndex = sample.material();
+    let lastItem = -1;
+    let localId = null;
+    for (let i = 0; i < count; i++) {
+      const position = found[i];
+      const itemIndex = meshes.samples(sampleIds[position]).item();
+      if (itemIndex !== lastItem) {
+        lastItem = itemIndex;
+        localId = model.localIds(meshes.meshesItems(itemIndex));
+      }
+      if (localId === null) continue;
+      const materialIndex = sampleMaterials[position];
       let materialItems = map.get(materialIndex);
       if (!materialItems) {
         materialItems = /* @__PURE__ */ new Set();
         map.set(materialIndex, materialItems);
       }
-      materialItems.add(localIds[index]);
+      materialItems.add(localId);
     }
-    for (const [materialIndex, localIds2] of map.entries()) {
+    for (const [materialIndex, localIds] of map.entries()) {
       const material = meshes.materials(materialIndex);
       if (!material) continue;
       const definition = ParserHelper.parseMaterial(material);
-      result.push({ localIds: [...localIds2], definition });
+      result.push({ localIds: [...localIds], definition });
     }
     return result;
+  }
+  indexSamples(model, meshes) {
+    if (this._indexedBuffer === model.bb) return;
+    const itemCount = meshes.meshesItemsLength();
+    const sampleCount = meshes.samplesLength();
+    const starts = new Uint32Array(itemCount + 1);
+    const items = new Uint32Array(sampleCount);
+    const materials = new Uint32Array(sampleCount);
+    for (let i = 0; i < sampleCount; i++) {
+      const sample = meshes.samples(i);
+      const itemIndex = sample.item();
+      items[i] = itemIndex;
+      materials[i] = sample.material();
+      if (itemIndex < itemCount) starts[itemIndex + 1]++;
+    }
+    for (let i = 0; i < itemCount; i++) starts[i + 1] += starts[i];
+    const total = starts[itemCount];
+    const sampleIds = new Uint32Array(total);
+    const sampleMaterials = new Uint32Array(total);
+    const cursor = starts.slice(0, itemCount);
+    for (let i = 0; i < sampleCount; i++) {
+      const itemIndex = items[i];
+      if (itemIndex >= itemCount) continue;
+      const position = cursor[itemIndex]++;
+      sampleIds[position] = i;
+      sampleMaterials[position] = materials[i];
+    }
+    this._sampleStarts = starts;
+    this._sampleIds = sampleIds;
+    this._sampleMaterials = sampleMaterials;
+    this._indexedBuffer = model.bb;
   }
   deduplicateMaterials(materialDefinition) {
     const ids = [];
@@ -33950,7 +34050,7 @@ function getIdsDelta(model, requests) {
   };
 }
 const FRAGMENTS_GENERATOR = "@thatopen/fragments";
-const FRAGMENTS_VERSION = "3.4.8";
+const FRAGMENTS_VERSION = "3.6.0";
 function getProvenanceMetadata() {
   return {
     generator: FRAGMENTS_GENERATOR,
@@ -35075,10 +35175,11 @@ function edit(model, requests, config) {
     const attributeOffset = Attribute.createAttribute(builder, dataOffset);
     attributesOffsets.push(attributeOffset);
   }
-  for (const [currentId, attributes] of itemsToCreate) {
+  for (const [currentId, created] of itemsToCreate) {
     if (itemsToDelete.has(currentId)) {
       continue;
     }
+    const attributes = itemsToUpdate.get(currentId) ?? created;
     categoriesOffsets.push(builder.createSharedString(attributes.category));
     if (attributes.guid) {
       guidsOffsets.push(builder.createSharedString(attributes.guid));
@@ -35634,11 +35735,15 @@ function getItems(model, itemIds) {
       source.add(i);
     }
   }
+  const guidByLocalId = /* @__PURE__ */ new Map();
+  for (let j = 0; j < model.guidsItemsLength(); j++) {
+    guidByLocalId.set(model.guidsItems(j), model.guids(j));
+  }
   const items = /* @__PURE__ */ new Map();
   for (const i of source) {
     const localId = model.localIds(i);
     const category = model.categories(i);
-    const guid = model.guids(i);
+    const guid = guidByLocalId.get(localId);
     const attrsData = model.attributes(i);
     const data = {};
     for (let j = 0; j < attrsData.dataLength(); j++) {
@@ -35646,7 +35751,10 @@ function getItems(model, itemIds) {
       const [name, value, type] = JSON.parse(attrString);
       data[name] = { value, type };
     }
-    items.set(localId, { data, category, guid });
+    items.set(
+      localId,
+      guid === void 0 ? { data, category } : { data, category, guid }
+    );
   }
   return items;
 }
@@ -35928,6 +36036,10 @@ class EditUtils {
   static itemDataToRawItemData = itemDataToRawItemData;
   static DELTA_MODEL_ID = DELTA_MODEL_ID;
 }
+const legacyRelationNames = {
+  DefinesOcurrence: "DefinesOccurrence",
+  DefinesOccurrence: "DefinesOcurrence"
+};
 class VirtualPropertiesController {
   _model;
   _boxes;
@@ -36390,20 +36502,26 @@ class VirtualPropertiesController {
     const relationsConfig = this._itemDataConfig.relations ?? {};
     let { attributes, relations } = this._itemDataConfig.relationsDefault;
     const { parentName, rel } = config;
+    const configKey = (name) => {
+      if (!name) return void 0;
+      if (name in relationsConfig) return name;
+      const alias = legacyRelationNames[name];
+      return alias && alias in relationsConfig ? alias : void 0;
+    };
+    const relKey = configKey(rel);
+    const parentKey = configKey(parentName);
     if (!parentName && !rel) {
       attributes = true;
       relations = true;
     } else {
-      const hasRelConfig = rel && rel in relationsConfig;
-      const hasParentConfig = parentName && parentName in relationsConfig;
-      if (hasRelConfig) {
-        const toProcess = relationsConfig[rel];
+      if (relKey) {
+        const toProcess = relationsConfig[relKey];
         if (toProcess) {
           attributes = toProcess.attributes;
           relations = toProcess.relations;
         }
-      } else if (hasParentConfig) {
-        const toProcess = relationsConfig[parentName];
+      } else if (parentKey) {
+        const toProcess = relationsConfig[parentKey];
         if (toProcess) {
           attributes = toProcess.attributes;
           relations = toProcess.relations;
@@ -38719,6 +38837,10 @@ class VirtualFragmentsModel {
   _reprIdMap = /* @__PURE__ */ new Map();
   _nextId = 0;
   _requestsForRedo = [];
+  // Changes whenever `requests` changes other than by appending (see getRequestsSince).
+  // Starts at a random 32-bit integer, not 0, so a generation read before a save or reload
+  // does not match the model loaded under the same id (a counter would repeat across workers).
+  _requestsGeneration = Math.floor(Math.random() * 4294967296);
   constructor(modelId, data, connection, config) {
     this._modelId = modelId;
     this._connection = connection;
@@ -39102,6 +39224,7 @@ class VirtualFragmentsModel {
     return this._requestIndex;
   }
   edit(requests, raw = true) {
+    this.startIdsAfter(requests);
     const ids = EditUtils.solveIds(requests, this._nextId);
     this._nextId += ids.length;
     for (const request of requests) {
@@ -39119,6 +39242,7 @@ class VirtualFragmentsModel {
   reset() {
     this.requests = [];
     this._requestsForRedo = [];
+    this._requestsGeneration++;
     this._requestIndex.rebuild(this.requests);
     this._nextId = this.getMaxLocalId();
   }
@@ -39145,6 +39269,7 @@ class VirtualFragmentsModel {
     }
     this._requestIndex.pop(lastRequest);
     this._requestsForRedo.unshift(lastRequest);
+    this._requestsGeneration++;
   }
   redo() {
     if (this._requestsForRedo.length === 0) {
@@ -39163,13 +39288,39 @@ class VirtualFragmentsModel {
       undoneRequests: this._requestsForRedo
     };
   }
+  /**
+   * The requests added since an earlier call, or all of them if the log changed otherwise.
+   * @param from - The `count` the earlier call returned.
+   * @param generation - The `generation` the earlier call returned.
+   */
+  getRequestsSince(from, generation) {
+    const kept = generation === this._requestsGeneration && Number.isInteger(from) && from >= 0 && from <= this.requests.length;
+    const start = kept ? from : 0;
+    return {
+      generation: this._requestsGeneration,
+      from: start,
+      count: this.requests.length,
+      requests: this.requests.slice(start)
+    };
+  }
   setRequests(data) {
     if (data.requests) {
       this.requests = data.requests;
       this._requestIndex.rebuild(this.requests);
+      this._requestsGeneration++;
+      this.startIdsAfter(this.requests);
     }
     if (data.undoneRequests) {
       this._requestsForRedo = data.undoneRequests;
+      this.startIdsAfter(this._requestsForRedo);
+    }
+  }
+  startIdsAfter(requests) {
+    for (const request of requests) {
+      const localId = request.localId;
+      if (Number.isInteger(localId)) {
+        this._nextId = Math.max(this._nextId, localId + 1);
+      }
     }
   }
   selectRequest(index) {
@@ -39182,6 +39333,7 @@ class VirtualFragmentsModel {
     }
     this.requests = [];
     this._requestsForRedo = [];
+    this._requestsGeneration++;
     for (let i = 0; i < allRequests.length; i++) {
       if (i <= index) {
         this.requests.push(allRequests[i]);

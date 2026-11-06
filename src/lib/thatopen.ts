@@ -197,8 +197,18 @@ export function createThatOpenAdapter(
       await controls.setLookAt(24, 18, 24, 0, 0, 0, true);
     },
     dispose() {
-      fragments.dispose();
-      components.dispose();
+      // Highlighter.dispose() touches fragments.core, so it must go before
+      // FragmentsManager is torn down (otherwise "FragmentsManager not initialized").
+      try {
+        components.get(OBF.Highlighter).dispose();
+      } catch (error) {
+        console.warn('[ThatOpen] Highlighter dispose failed:', error);
+      }
+      try {
+        components.dispose();
+      } catch (error) {
+        console.warn('[ThatOpen] Components dispose failed:', error);
+      }
     },
     reset() {
       if (currentModel?.object) {

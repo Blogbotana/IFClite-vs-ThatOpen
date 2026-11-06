@@ -5,6 +5,7 @@ import { GeometryProcessor, decodeInstancedShard, type MeshData, type Tessellati
 import { ParquetExporter } from '@ifc-lite/export';
 import { BinaryCacheWriter, BinaryCacheReader } from '@ifc-lite/cache';
 import { Renderer, type RenderOptions } from '@ifc-lite/renderer';
+import { installEmptyGroup2Shim } from './webgpu-empty-group-shim';
 import type { EntitySummary, ViewerAdapter, ViewerLoadContext, ViewerMetric } from '../types';
 import { persistArtifacts, textBytes } from './file-system';
 
@@ -287,6 +288,7 @@ export function createIfcLiteAdapter(
   canvas: HTMLCanvasElement,
   options?: { tessellationQuality?: TessellationQuality; parallel?: boolean; instancing?: boolean },
 ): ViewerAdapter {
+  installEmptyGroup2Shim();
   const renderer = new Renderer(canvas);
   // Geometry settings are pinned to mirror ThatOpen's out-of-the-box defaults
   // for an apples-to-apples comparison (`@thatopen/components` IfcFragmentSettings
